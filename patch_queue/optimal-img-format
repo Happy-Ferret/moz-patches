@@ -1,0 +1,60 @@
+# HG changeset patch
+# Parent a4cc9f75659340fccaf56a1391fd744f1259f5d5
+Moves OptimalFormatFor from ShadowLayers.cpp to gfxAsurface.h in order to be able to reuse it.
+
+diff --git a/gfx/thebes/gfxASurface.cpp b/gfx/thebes/gfxASurface.cpp
+--- a/gfx/thebes/gfxASurface.cpp
++++ b/gfx/thebes/gfxASurface.cpp
+@@ -48,16 +48,36 @@
+ #include "nsServiceManagerUtils.h"
+ #include "nsStringGlue.h"
+ #include "nsIClipboardHelper.h"
+ 
+ using mozilla::CheckedInt;
+ 
+ static cairo_user_data_key_t gfxasurface_pointer_key;
+ 
++gfxASurface::gfxImageFormat
++OptimalFormatFor(gfxASurface::gfxContentType aContent)
++{
++  switch (aContent) {
++  case gfxASurface::CONTENT_COLOR:
++#ifdef MOZ_GFX_OPTIMIZE_MOBILE
++    return gfxASurface::ImageFormatRGB16_565;
++#else
++    return gfxASurface::ImageFormatRGB24;
++#endif
++  case gfxASurface::CONTENT_ALPHA:
++    return gfxASurface::ImageFormatA8;
++  case gfxASurface::CONTENT_COLOR_ALPHA:
++    return gfxASurface::ImageFormatARGB32;
++  default:
++    NS_NOTREACHED("unknown gfxContentType");
++    return gfxASurface::ImageFormatARGB32;
++  }
++}
++
+ // Surfaces use refcounting that's tied to the cairo surface refcnt, to avoid
+ // refcount mismatch issues.
+ nsrefcnt
+ gfxASurface::AddRef(void)
+ {
+     if (mSurfaceValid) {
+         if (mFloatingRefs) {
+             // eat a floating ref
+diff --git a/gfx/thebes/gfxASurface.h b/gfx/thebes/gfxASurface.h
+--- a/gfx/thebes/gfxASurface.h
++++ b/gfx/thebes/gfxASurface.h
+@@ -379,9 +379,12 @@ public:
+   {
+     NS_ASSERTION(NS_IsMainThread(),
+                  "Can only add a reference on the main thread");
+     aRawRef->AddRef();
+   }
+ };
+ 
+ #endif
++
++gfxASurface::gfxImageFormat OptimalFormatFor(gfxASurface::gfxContentType aContent);
++
+ #endif /* GFX_ASURFACE_H */

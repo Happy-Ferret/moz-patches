@@ -1,0 +1,6 @@
+xrender-disabled$ 
+optimal-img-format$obsolete
+optimal-shmem$ 
+videoBridge$TODO: setup bridge parent
+videoBridge-child$Defines when the child side of the bridge should send stuff
+event-origin$ 

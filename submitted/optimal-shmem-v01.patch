@@ -1,0 +1,126 @@
+# HG changeset patch
+# User Nicolas Silva <nsilva@mozilla.com>
+# Date 1338315140 14400
+# Node ID 891e2fa8c84ac9fb43de1912fd32dc1b06d39ccf
+# Parent  6f82bacef9fe725f74b2d7f878c27166911e7800
+Moves OptimalShmemType from ShadowLayers.cpp to SharedMemory.h
+
+diff --git a/gfx/layers/ipc/ShadowLayers.cpp b/gfx/layers/ipc/ShadowLayers.cpp
+--- a/gfx/layers/ipc/ShadowLayers.cpp
++++ b/gfx/layers/ipc/ShadowLayers.cpp
+@@ -5,17 +5,16 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include <set>
+ #include <vector>
+ 
+ #include "gfxSharedImageSurface.h"
+ 
+-#include "mozilla/ipc/SharedMemorySysV.h"
+ #include "mozilla/layers/PLayerChild.h"
+ #include "mozilla/layers/PLayersChild.h"
+ #include "mozilla/layers/PLayersParent.h"
+ #include "ShadowLayers.h"
+ #include "ShadowLayerChild.h"
+ #include "gfxipc/ShadowLayerUtils.h"
+ #include "RenderTrace.h"
+ #include "sampler.h"
+@@ -337,31 +336,16 @@ ShadowLayerForwarder::EndTransaction(Inf
+     }
+   }
+ 
+   mIsFirstPaint = false;
+   MOZ_LAYERS_LOG(("[LayersForwarder] ... done"));
+   return true;
+ }
+ 
+-static SharedMemory::SharedMemoryType
+-OptimalShmemType()
+-{
+-#if defined(MOZ_PLATFORM_MAEMO) && defined(MOZ_HAVE_SHAREDMEMORYSYSV)
+-  // Use SysV memory because maemo5 on the N900 only allots 64MB to
+-  // /dev/shm, even though it has 1GB(!!) of system memory.  Sys V shm
+-  // is allocated from a different pool.  We don't want an arbitrary
+-  // cap that's much much lower than available memory on the memory we
+-  // use for layers.
+-  return SharedMemory::TYPE_SYSV;
+-#else
+-  return SharedMemory::TYPE_BASIC;
+-#endif
+-}
+-
+ bool
+ ShadowLayerForwarder::AllocDoubleBuffer(const gfxIntSize& aSize,
+                                         gfxASurface::gfxContentType aContent,
+                                         gfxSharedImageSurface** aFrontBuffer,
+                                         gfxSharedImageSurface** aBackBuffer)
+ {
+   return AllocBuffer(aSize, aContent, aFrontBuffer) &&
+          AllocBuffer(aSize, aContent, aBackBuffer);
+diff --git a/ipc/glue/SharedMemory.cpp b/ipc/glue/SharedMemory.cpp
+--- a/ipc/glue/SharedMemory.cpp
++++ b/ipc/glue/SharedMemory.cpp
+@@ -5,16 +5,17 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include <math.h>
+ 
+ #include "nsString.h"
+ #include "nsIMemoryReporter.h"
+ #include "mozilla/ipc/SharedMemory.h"
++#include "mozilla/ipc/SharedMemorySysV.h"
+ 
+ namespace mozilla {
+ namespace ipc {
+ 
+ static PRInt64 gShmemAllocated;
+ static PRInt64 gShmemMapped;
+ static PRInt64 GetShmemAllocated() { return gShmemAllocated; }
+ static PRInt64 GetShmemMapped() { return gShmemMapped; }
+@@ -83,10 +84,25 @@ SharedMemory::Unmapped()
+ SharedMemory::Destroyed()
+ {
+   NS_ABORT_IF_FALSE(gShmemAllocated >= PRInt64(mAllocSize),
+                     "Can't destroy more than allocated");
+   gShmemAllocated -= mAllocSize;
+   mAllocSize = 0;
+ }
+ 
++SharedMemory::SharedMemoryType
++OptimalShmemType()
++{
++#if defined(MOZ_PLATFORM_MAEMO) && defined(MOZ_HAVE_SHAREDMEMORYSYSV)
++  // Use SysV memory because maemo5 on the N900 only allots 64MB to
++  // /dev/shm, even though it has 1GB(!!) of system memory.  Sys V shm
++  // is allocated from a different pool.  We don't want an arbitrary
++  // cap that's much much lower than available memory on the memory we
++  // use for layers.
++  return SharedMemory::TYPE_SYSV;
++#else
++  return SharedMemory::TYPE_BASIC;
++#endif
++}
++
+ } // namespace ipc
+ } // namespace mozilla
+diff --git a/ipc/glue/SharedMemory.h b/ipc/glue/SharedMemory.h
+--- a/ipc/glue/SharedMemory.h
++++ b/ipc/glue/SharedMemory.h
+@@ -93,13 +93,15 @@ protected:
+   // foreign handle have an alloc size of 0, even though they have
+   // access to the alloc-size information.
+   size_t mAllocSize;
+   // The size of the region mapped in Map(), if successful.  All
+   // SharedMemorys that are mapped have a non-zero mapped size.
+   size_t mMappedSize;
+ };
+ 
++SharedMemory::SharedMemoryType OptimalShmemType();
++
+ } // namespace ipc
+ } // namespace mozilla
+ 
+ 
+ #endif // ifndef mozilla_ipc_SharedMemory_h

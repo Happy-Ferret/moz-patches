@@ -1,0 +1,519 @@
+# HG changeset patch
+# Parent 33ce64f53b2963108aa963729cdff2dfa576f750
+
+diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
+--- a/gfx/layers/ImageLayers.h
++++ b/gfx/layers/ImageLayers.h
+@@ -11,16 +11,17 @@
+ #include "nsISupportsImpl.h"
+ #include "gfxPattern.h"
+ #include "nsThreadUtils.h"
+ #include "mozilla/ReentrantMonitor.h"
+ #include "mozilla/TimeStamp.h"
+ #include "mozilla/mozalloc.h"
+ #include "mozilla/Mutex.h"
+ #include "gfxPlatform.h"
++#include "mozilla/LinkedList.h"
+ 
+ #ifdef XP_MACOSX
+ #include "nsIOSurface.h"
+ #endif
+ #ifdef XP_WIN
+ struct ID3D10Texture2D;
+ struct ID3D10Device;
+ struct ID3D10ShaderResourceView;
+@@ -32,16 +33,18 @@ namespace mozilla {
+ 
+ class CrossProcessMutex;
+ namespace ipc {
+ class Shmem;
+ }
+ 
+ namespace layers {
+ 
++class ImageBridgeChild;
++
+ enum StereoMode {
+   STEREO_MODE_MONO,
+   STEREO_MODE_LEFT_RIGHT,
+   STEREO_MODE_RIGHT_LEFT,
+   STEREO_MODE_BOTTOM_TOP,
+   STEREO_MODE_TOP_BOTTOM
+ };
+ 
+@@ -278,29 +281,32 @@ struct RemoteImageData {
+ 
+ /**
+  * A class that manages Images for an ImageLayer. The only reason
+  * we need a separate class here is that ImageLayers aren't threadsafe
+  * (because layers can only be used on the main thread) and we want to
+  * be able to set the current Image from any thread, to facilitate
+  * video playback without involving the main thread, for example.
+  */
+-class THEBES_API ImageContainer {
++class THEBES_API ImageContainer : public LinkedListElement<ImageContainer> 
++{
+   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ImageContainer)
+ 
+ public:
+   ImageContainer() :
+     mReentrantMonitor("ImageContainer.mReentrantMonitor"),
+     mPaintCount(0),
+     mPreviousImagePainted(false),
+     mImageFactory(new ImageFactory()),
+     mRecycleBin(new BufferRecycleBin()),
+     mRemoteData(nsnull),
+     mRemoteDataMutex(nsnull),
+-    mCompositionNotifySink(nsnull)
++    mCompositionNotifySink(nsnull),
++    mImageBridgeChild(nsnull),
++    mLayerID(0)
+   {}
+ 
+   ~ImageContainer();
+ 
+   /**
+    * Create an Image in one of the given formats.
+    * Picks the "best" format from the list and creates an Image of that
+    * format.
+@@ -468,16 +474,38 @@ public:
+    */
+   void SetRemoteImageData(RemoteImageData *aRemoteData,
+                           CrossProcessMutex *aRemoteDataMutex);
+   /**
+    * This can be used to check if the container has RemoteData set.
+    */
+   RemoteImageData *GetRemoteImageData() { return mRemoteData; }
+ 
++  ImageBridgeChild * GetImageBridgeChild() const 
++  {
++    return mImageBridgeChild;
++  }
++
++  /**
++   * Should be called by ImageBridgeChild only.
++   *
++   * see: ImageBridgeChild::AddImageContainer
++   *      ImageBridgeChild::removeImageContainer
++   */
++  void SetImageBridgeChild(ImageBridgeChild * aBridge)
++  {
++    mImageBridgeChild = aBridge;
++  }
++
++  PRInt32 GetLayerID() const { return mLayerID; }
++  void SetLayerID(PRInt32 aLayerID)
++  { 
++    mLayerID = aLayerID; 
++  }
++
+ protected:
+   typedef mozilla::ReentrantMonitor ReentrantMonitor;
+ 
+   // This is called to ensure we have an active image, this may not be true
+   // when we're storing image information in a RemoteImageData structure.
+   // NOTE: If we have remote data mRemoteDataMutex should be locked when
+   // calling this function!
+   void EnsureActiveImage();
+@@ -524,16 +552,20 @@ protected:
+   RemoteImageData *mRemoteData;
+ 
+   // This cross-process mutex is used to synchronise access to mRemoteData.
+   // When this mutex is held, we will always be inside the mReentrantMonitor
+   // however the same is not true vice versa.
+   CrossProcessMutex *mRemoteDataMutex;
+ 
+   CompositionNotifySink *mCompositionNotifySink;
++
++  // ImageBridgeProtocol
++  ImageBridgeChild * mImageBridgeChild;
++  PRInt32 mLayerID;
+ };
+  
+ class AutoLockImage
+ {
+ public:
+   AutoLockImage(ImageContainer *aContainer) : mContainer(aContainer) { mImage = mContainer->LockCurrentImage(); }
+   AutoLockImage(ImageContainer *aContainer, gfxASurface **aSurface) : mContainer(aContainer) {
+     *aSurface = mContainer->LockCurrentAsSurface(&mSize, getter_AddRefs(mImage)).get();
+diff --git a/gfx/layers/Makefile.in b/gfx/layers/Makefile.in
+--- a/gfx/layers/Makefile.in
++++ b/gfx/layers/Makefile.in
+@@ -105,27 +105,31 @@ EXPORTS_mozilla/layers =\
+         CompositorCocoaWidgetHelper.h \
+         CompositorChild.h \
+         CompositorParent.h \
+         ShadowLayers.h \
+         ShadowLayersChild.h \
+         ShadowLayersParent.h \
+         ShadowLayersManager.h \
+         RenderTrace.h \
++        ImageBridgeChild.h \
++        ImageBridgeParent.h \
+         $(NULL)
+ 
+ CPPSRCS += \
+         CompositorCocoaWidgetHelper.cpp \
+         CompositorChild.cpp \
+         CompositorParent.cpp \
+         ShadowLayers.cpp \
+         ShadowLayerChild.cpp \
+         ShadowLayersChild.cpp \
+         ShadowLayerParent.cpp \
+         ShadowLayersParent.cpp \
++        ImageBridgeChild.cpp \
++        ImageBridgeParent.cpp \
+         $(NULL)
+ 
+ ifdef MOZ_X11 #{
+ EXPORTS_mozilla/layers += ShadowLayerUtilsX11.h
+ CPPSRCS += ShadowLayerUtilsX11.cpp
+ endif #}
+ 
+ ifdef MOZ_ENABLE_D3D10_LAYER
+diff --git a/gfx/layers/ipc/ImageBridgeChild.cpp b/gfx/layers/ipc/ImageBridgeChild.cpp
+new file mode 100644
+--- /dev/null
++++ b/gfx/layers/ipc/ImageBridgeChild.cpp
+@@ -0,0 +1,106 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "ImageBridgeChild.h"
++#include "ImageBridgeParent.h"
++
++#include "base/thread.h"
++
++// temporary: kinda nice for me while the patch is not 
++// finished, will be removed
++#ifdef __GNUG__
++#define NOT_IMPLEMENTED printf("\033[1;34m %s is not implemented!\033[0m\n", __PRETTY_FUNCTION__);
++#else
++#define NOT_IMPLEMENTED   
++#endif
++
++namespace mozilla {
++namespace layers {
++
++
++ImageBridgeChild::ImageBridgeChild(base::Thread& aThread)
++{
++  mThread = &aThread;
++}
++
++ImageBridgeChild::~ImageBridgeChild()
++{
++  ImageContainer * it = mImageContainers.getFirst();
++  while (it != nsnull) {
++    it->SetImageBridgeChild(nsnull);
++    it = it->getNext();
++  }
++}
++
++
++// IPDL protocol
++
++
++bool ImageBridgeChild::RecvReleasedSharedImage(const LayerID_t& aLayerID, const MediaSharedImage& aImage)
++{
++  printf("\033[1;34m -- ImageBridgeChild: received an image (layerID: %i) \033[0m\n", aLayerID);
++  NOT_IMPLEMENTED
++  return true;
++}
++
++bool ImageBridgeChild::AllocSharedImage(const gfxIntSize& aSize,
++                        gfxASurface::gfxContentType aContent,
++                        SurfaceDescriptor* aSurface)
++{
++  // TODO
++  NOT_IMPLEMENTED
++  return false;
++}
++
++void ImageBridgeChild::DestroySharedImage(SurfaceDescriptor* aSurface)
++{
++  NOT_IMPLEMENTED
++  // TODO
++}
++
++
++// -------------
++
++
++
++void ImageBridgeChild::AddImageContainer(ImageContainer& aImageContainer)
++{
++  mImageContainers.insertBack(&aImageContainer);
++  aImageContainer.SetImageBridgeChild(this);
++}
++
++void ImageBridgeChild::RemoveImageContainer(ImageContainer& aImageContainer)
++{
++  aImageContainer.remove();
++  aImageContainer.SetImageBridgeChild(nsnull);
++}
++
++
++class ImageBridgeConnectionTask : public Task
++{
++public:
++ImageBridgeConnectionTask(ImageBridgeChild * child, ImageBridgeParent * parent)
++  : mChild(child), mParent(parent) {}
++
++  void Run()
++  {
++    MessageLoop * parentMsgLoop = mParent->GetThread()->message_loop();
++    ipc::AsyncChannel * parentChannel = mParent->GetIPCChannel();
++    mChild->Open(parentChannel, parentMsgLoop, mozilla::ipc::AsyncChannel::Child);
++  }
++private:
++  ImageBridgeChild * mChild;
++  ImageBridgeParent * mParent;
++};
++
++void ImageBridgeChild::AsyncConnect(ImageBridgeParent& aParent)
++{
++  Task * t = new ImageBridgeConnectionTask(this, &aParent);
++  GetThread()->message_loop()->PostTask(FROM_HERE, t);
++}
++
++
++} // layers
++} // mozilla
+\ No newline at end of file
+diff --git a/gfx/layers/ipc/ImageBridgeChild.h b/gfx/layers/ipc/ImageBridgeChild.h
+new file mode 100644
+--- /dev/null
++++ b/gfx/layers/ipc/ImageBridgeChild.h
+@@ -0,0 +1,62 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/layers/PImageBridgeChild.h"
++#include "mozilla/LinkedList.h" 
++#include "ImageLayers.h" 
++
++namespace base {
++class Thread;
++}
++
++namespace mozilla {
++namespace layers {
++
++class ImageBridgeParent;
++
++class ImageBridgeChild : public PImageBridgeChild
++{
++// NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VideoBridgeChild)
++public:
++  typedef PRInt32 CompositorID_t;
++  typedef PRInt32 LayerID_t;
++  typedef MediaSharedImage SharedImage;
++  typedef MediaSurfaceDescriptor SurfaceDescriptor;
++
++  ImageBridgeChild(base::Thread& aThread);
++  ~ImageBridgeChild();
++
++  // IPDL protocol
++
++  // override
++  virtual bool RecvReleasedSharedImage(const LayerID_t& aLayerID, 
++                                       const SharedImage& aImage);
++
++  bool AllocSharedImage(const gfxIntSize& aSize,
++                        gfxASurface::gfxContentType aContent,
++                        SurfaceDescriptor* aImage);
++
++  void DestroySharedImage(SurfaceDescriptor* aSurface);
++
++  // -------------
++  
++  // Temporary, not suitable for cross-process layers
++  void AsyncConnect(ImageBridgeParent& aParent);
++
++  void AddImageContainer(ImageContainer& aImageContainer);
++  void RemoveImageContainer(ImageContainer& aImageContainer);
++
++  base::Thread * GetThread() const
++  {
++    return mThread;
++  }
++
++private:
++  base::Thread * mThread;
++  LinkedList<ImageContainer> mImageContainers;
++};
++
++} // layers
++} // mozilla
+\ No newline at end of file
+diff --git a/gfx/layers/ipc/ImageBridgeParent.cpp b/gfx/layers/ipc/ImageBridgeParent.cpp
+new file mode 100644
+--- /dev/null
++++ b/gfx/layers/ipc/ImageBridgeParent.cpp
+@@ -0,0 +1,29 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "ImageBridgeParent.h"
++
++#include "base/thread.h"
++
++namespace mozilla {
++namespace layers {
++
++bool ImageBridgeParent::RecvPushSharedImage(const LayerID_t& aLayerID, 
++                                            const MediaSharedImage& aImage)
++{
++  printf("ImageBridgeParent::RecvPushSharedImage (layerID: %i)\n", aLayerID);
++  // TODO
++  SendReleasedSharedImage(aLayerID,aImage);
++  return true;
++}
++
++ImageBridgeParent::ImageBridgeParent(base::Thread& aThread)
++: mThread(&aThread)
++{
++
++}
++
++} // layers
++} // mozilla
+\ No newline at end of file
+diff --git a/gfx/layers/ipc/ImageBridgeParent.h b/gfx/layers/ipc/ImageBridgeParent.h
+new file mode 100644
+--- /dev/null
++++ b/gfx/layers/ipc/ImageBridgeParent.h
+@@ -0,0 +1,44 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/layers/PImageBridgeParent.h"
++
++namespace base {
++class Thread;
++}
++
++namespace mozilla {
++namespace layers {
++
++class ImageBridgeChild;
++
++class ImageBridgeParent : public PImageBridgeParent
++{
++// NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VideoBridgeChild)
++public:
++  typedef PRInt32 CompositorID_t;
++  typedef PRInt32 LayerID_t;
++  // IPDL protocol
++
++  // override
++  virtual bool RecvPushSharedImage(const LayerID_t& aLayerID, 
++                                   const MediaSharedImage& aImage);
++
++  // -------------
++
++  ImageBridgeParent(base::Thread& aThread);
++
++  base::Thread * GetThread() const
++  {
++    return mThread;
++  }
++
++private:
++  base::Thread * mThread;
++  // TODO: a list of ShadowImageLayers here
++};
++
++} // layers
++} // mozilla
+\ No newline at end of file
+diff --git a/gfx/layers/ipc/PImageBridge.ipdl b/gfx/layers/ipc/PImageBridge.ipdl
+new file mode 100644
+--- /dev/null
++++ b/gfx/layers/ipc/PImageBridge.ipdl
+@@ -0,0 +1,61 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++include "gfxipc/ShadowLayerUtils.h";
++
++using nsIntPoint;
++using nsIntRect;
++using nsIntRegion;
++using nsIntSize;
++using mozilla::layers::SurfaceDescriptorX11;
++using mozilla::null_t;
++using mozilla::WindowsHandle;
++
++namespace mozilla {
++namespace layers {
++
++struct MediaSurfaceDescriptorD3D10 {
++  WindowsHandle handle;
++};
++
++union MediaSurfaceDescriptor {
++  Shmem;
++  MediaSurfaceDescriptorD3D10;
++  SurfaceDescriptorX11;
++};
++
++struct MediaYUVImage {
++  Shmem Ydata;
++  Shmem Udata;
++  Shmem Vdata;
++  nsIntRect picture;
++};
++
++union MediaSharedImage {
++  MediaSurfaceDescriptor;
++  MediaYUVImage;
++  null_t;
++};
++
++/**
++ * The PImageBridge protocol is used to allow isolated threads or processes to push
++ * frames directly to the compositor thread/process without relying on the main thread
++ * which might be too busy dealing with content script.
++ */
++async protocol PImageBridge
++{
++parent:
++    // Send a SharedImage to the compositor giving to the compositor ownership 
++    // of the image.
++    PushSharedImage(PRInt32 layerID, MediaSharedImage image);
++
++child:
++    // Give back the child thread/process ownership to a SharedImage
++    ReleasedSharedImage(PRInt32 layerID, MediaSharedImage image);
++};
++
++
++} //namespace
++} //namespace
+\ No newline at end of file
+diff --git a/gfx/layers/ipc/ipdl.mk b/gfx/layers/ipc/ipdl.mk
+--- a/gfx/layers/ipc/ipdl.mk
++++ b/gfx/layers/ipc/ipdl.mk
+@@ -1,9 +1,10 @@
+ # This Source Code Form is subject to the terms of the Mozilla Public
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+ IPDLSRCS = \
+   PCompositor.ipdl \
+   PLayer.ipdl \
+   PLayers.ipdl \
++  PImageBridge.ipdl \
+   $(NULL)
