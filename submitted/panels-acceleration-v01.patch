@@ -1,0 +1,189 @@
+# HG changeset patch
+# User Nicolas Silva <nsilva@mozilla.com>
+# Date 1337825395 14400
+# Node ID 06e1c690bdd0a22a57d4d376ca3be91b17cf3af4
+# Parent  15a1deaf3dcbdaa9eb527d6dbc9a01c1d6c5ceba
+bug 758048 - Moves PopupType from the windows widget implementation to the cross platform base class and uses it to determine when to accelerate windows.
+
+diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
+--- a/widget/windows/nsWindow.cpp
++++ b/widget/windows/nsWindow.cpp
+@@ -322,17 +322,16 @@ nsWindow::nsWindow() : nsBaseWidget()
+   mCustomNonClient      = false;
+   mHideChrome           = false;
+   mFullscreenMode       = false;
+   mMousePresent         = false;
+   mDestroyCalled        = false;
+   mPickerDisplayCount   = 0;
+   mWindowType           = eWindowType_child;
+   mBorderStyle          = eBorderStyle_default;
+-  mPopupType            = ePopupTypeAny;
+   mOldSizeMode          = nsSizeMode_Normal;
+   mLastSizeMode         = nsSizeMode_Normal;
+   mLastPoint.x          = 0;
+   mLastPoint.y          = 0;
+   mLastSize.width       = 0;
+   mLastSize.height      = 0;
+   mOldStyle             = 0;
+   mOldExStyle           = 0;
+@@ -462,17 +461,16 @@ nsWindow::Create(nsIWidget *aParent,
+     parent = aParent ? (HWND)aParent->GetNativeData(NS_NATIVE_WINDOW) : NULL;
+     mParent = aParent;
+   } else { // has a nsNative parent
+     parent = (HWND)aNativeParent;
+     mParent = aNativeParent ?
+       WinUtils::GetNSWindowPtr((HWND)aNativeParent) : nsnull;
+   }
+ 
+-  mPopupType = aInitData->mPopupHint;
+   mIsRTL = aInitData->mRTL;
+ 
+   DWORD style = WindowStyle();
+   DWORD extendedStyle = WindowExStyle();
+ 
+   if (mWindowType == eWindowType_popup) {
+     if (!aParent)
+       parent = NULL;
+diff --git a/widget/windows/nsWindow.h b/widget/windows/nsWindow.h
+--- a/widget/windows/nsWindow.h
++++ b/widget/windows/nsWindow.h
+@@ -441,18 +441,16 @@ protected:
+   static bool             IsTopLevelMouseExit(HWND aWnd);
+   nsresult                SetWindowClipRegion(const nsTArray<nsIntRect>& aRects,
+                                               bool aIntersectWithExisting);
+   nsIntRegion             GetRegionToPaint(bool aForceFullRepaint, 
+                                            PAINTSTRUCT ps, HDC aDC);
+   static void             ActivateOtherWindowHelper(HWND aWnd);
+   void                    ClearCachedResources();
+ 
+-  nsPopupType PopupType() { return mPopupType; }
+-
+ protected:
+   nsCOMPtr<nsIWidget>   mParent;
+   nsIntSize             mLastSize;
+   nsIntPoint            mLastPoint;
+   HWND                  mWnd;
+   WNDPROC               mPrevWndProc;
+   HBRUSH                mBrush;
+   bool                  mIsTopWidgetWindow;
+@@ -468,17 +466,16 @@ protected:
+   bool                  mMousePresent;
+   bool                  mDestroyCalled;
+   PRUint32              mBlurSuppressLevel;
+   DWORD_PTR             mOldStyle;
+   DWORD_PTR             mOldExStyle;
+   InputContext mInputContext;
+   nsNativeDragTarget*   mNativeDragTarget;
+   HKL                   mLastKeyboardLayout;
+-  nsPopupType           mPopupType;
+   nsSizeMode            mOldSizeMode;
+   nsSizeMode            mLastSizeMode;
+   WindowHook            mWindowHook;
+   DWORD                 mAssumeWheelIsZoomUntil;
+   PRUint32              mPickerDisplayCount;
+   static bool           sDropShadowEnabled;
+   static PRUint32       sInstanceCount;
+   static TriStateBool   sCanQuit;
+diff --git a/widget/xpwidgets/nsBaseWidget.cpp b/widget/xpwidgets/nsBaseWidget.cpp
+--- a/widget/xpwidgets/nsBaseWidget.cpp
++++ b/widget/xpwidgets/nsBaseWidget.cpp
+@@ -92,16 +92,17 @@ nsBaseWidget::nsBaseWidget()
+ , mForceLayersAcceleration(false)
+ , mTemporarilyUseBasicLayerManager(false)
+ , mBounds(0,0,0,0)
+ , mOriginalBounds(nsnull)
+ , mClipRectCount(0)
+ , mZIndex(0)
+ , mSizeMode(nsSizeMode_Normal)
+ , mPopupLevel(ePopupLevelTop)
++, mPopupType(ePopupTypeAny)
+ {
+ #ifdef NOISY_WIDGET_LEAKS
+   gNumWidgets++;
+   printf("WIDGETS+ = %d\n", gNumWidgets);
+ #endif
+ 
+ #ifdef DEBUG
+   debug_RegisterPrefCallbacks();
+@@ -203,16 +204,17 @@ void nsBaseWidget::BaseCreate(nsIWidget 
+     NS_ADDREF(mContext);
+     mContext->Init(nsnull);
+   }
+ 
+   if (nsnull != aInitData) {
+     mWindowType = aInitData->mWindowType;
+     mBorderStyle = aInitData->mBorderStyle;
+     mPopupLevel = aInitData->mPopupLevel;
++    mPopupType = aInitData->mPopupHint;
+   }
+ 
+   if (aParent) {
+     aParent->AddChild(this);
+   }
+ }
+ 
+ NS_IMETHODIMP nsBaseWidget::CaptureMouse(bool aCapture)
+@@ -800,18 +802,22 @@ nsBaseWidget::GetShouldAccelerate()
+ # else
+   bool accelerateByDefault = false;
+ # endif
+ 
+ #else
+   bool accelerateByDefault = false;
+ #endif
+ 
++  // We don't want to accelerate small popup windows like menu, but we still 
++  // want to accelerate xul panels that may contain arbitrarily complex content.
++  bool isSmallPopup = ((mWindowType == eWindowType_popup) 
++    && (mPopupType != ePopupTypePanel));
+   // we should use AddBoolPrefVarCache
+-  bool disableAcceleration = (mWindowType == eWindowType_popup) || 
++  bool disableAcceleration = isSmallPopup || 
+     Preferences::GetBool("layers.acceleration.disabled", false);
+   mForceLayersAcceleration =
+     Preferences::GetBool("layers.acceleration.force-enabled", false);
+ 
+   const char *acceleratedEnv = PR_GetEnv("MOZ_ACCELERATED");
+   accelerateByDefault = accelerateByDefault ||
+                         (acceleratedEnv && (*acceleratedEnv != '0'));
+ 
+diff --git a/widget/xpwidgets/nsBaseWidget.h b/widget/xpwidgets/nsBaseWidget.h
+--- a/widget/xpwidgets/nsBaseWidget.h
++++ b/widget/xpwidgets/nsBaseWidget.h
+@@ -260,16 +260,18 @@ protected:
+   {
+     static NS_DEFINE_IID(kCPopUpCID, NS_CHILD_CID);
+     nsCOMPtr<nsIWidget> widget = do_CreateInstance(kCPopUpCID);
+     return widget.forget();
+   }
+ 
+   BasicLayerManager* CreateBasicLayerManager();
+ 
++  nsPopupType PopupType() const { return mPopupType; }
++
+ protected:
+   /**
+    * Starts the OMTC compositor destruction sequence.
+    *
+    * When this function returns, the compositor should not be 
+    * able to access the opengl context anymore.
+    * It is safe to call it several times if platform implementations
+    * require the compositor to be destroyed before ~nsBaseWidget is
+@@ -299,16 +301,17 @@ protected:
+   nsIntRect         mBounds;
+   nsIntRect*        mOriginalBounds;
+   // When this pointer is null, the widget is not clipped
+   nsAutoArrayPtr<nsIntRect> mClipRects;
+   PRUint32          mClipRectCount;
+   PRInt32           mZIndex;
+   nsSizeMode        mSizeMode;
+   nsPopupLevel      mPopupLevel;
++  nsPopupType       mPopupType;
+ 
+   // the last rolled up popup. Only set this when an nsAutoRollup is in scope,
+   // so it can be cleared automatically.
+   static nsIContent* mLastRollup;
+ 
+ #ifdef DEBUG
+ protected:
+   static nsAutoString debug_GuiEventToString(nsGUIEvent * aGuiEvent);
