@@ -1,6 +1,53 @@
 # HG changeset patch
 # Parent b48dde6bb4393042981de8c582aa73a4bc8be33a
 
+diff --git a/content/media/VideoFrameContainer.cpp b/content/media/VideoFrameContainer.cpp
+--- a/content/media/VideoFrameContainer.cpp
++++ b/content/media/VideoFrameContainer.cpp
+@@ -26,17 +26,19 @@ void VideoFrameContainer::SetCurrentFram
+     mIntrinsicSizeChanged = true;
+   }
+ 
+   gfxIntSize oldFrameSize = mImageContainer->GetCurrentSize();
+   TimeStamp lastPaintTime = mImageContainer->GetPaintTime();
+   if (!lastPaintTime.IsNull() && !mPaintTarget.IsNull()) {
+     mPaintDelay = lastPaintTime - mPaintTarget;
+   }
+-  mImageContainer->SetCurrentImage(aImage);
++  //mImageContainer->SetCurrentImage(aImage);
++  mImageContainer->SetCurrentImageAsync(aImage);
++
+   gfxIntSize newFrameSize = mImageContainer->GetCurrentSize();
+   if (oldFrameSize != newFrameSize) {
+     mImageSizeChanged = true;
+   }
+ 
+   mPaintTarget = aTargetTime;
+ }
+ 
+diff --git a/gfx/gl/GLContext.cpp b/gfx/gl/GLContext.cpp
+--- a/gfx/gl/GLContext.cpp
++++ b/gfx/gl/GLContext.cpp
+@@ -2293,17 +2293,18 @@ GLContext::UploadSurfaceToTexture(gfxASu
+             NS_ASSERTION(false, "Unhandled image surface format!");
+             format = 0;
+             type = 0;
+             shader = ShaderProgramType(0);
+     }
+ 
+     PRInt32 stride = imageSurface->Stride();
+ 
+-    internalformat = mIsGLES2 ? format : LOCAL_GL_RGBA;
++    //internalformat = mIsGLES2 ? format : LOCAL_GL_RGBA;
++    internalformat = true ? format : LOCAL_GL_RGBA;
+ 
+     nsIntRegionRectIterator iter(paintRegion);
+     const nsIntRect *iterRect;
+ 
+     // Top left point of the region's bounding rectangle.
+     nsIntPoint topLeft = paintRegion.GetBounds().TopLeft();
+ 
+     while ((iterRect = iter.Next())) {
 diff --git a/gfx/layers/ImageLayers.cpp b/gfx/layers/ImageLayers.cpp
 --- a/gfx/layers/ImageLayers.cpp
 +++ b/gfx/layers/ImageLayers.cpp
@@ -24,7 +71,7 @@ diff --git a/gfx/layers/ImageLayers.cpp b/gfx/layers/ImageLayers.cpp
  #ifdef XP_WIN
  #include "gfxD2DSurface.h"
  #include "gfxWindowsPlatform.h"
-@@ -106,16 +108,79 @@ ImageContainer::SetCurrentImage(Image *a
+@@ -106,16 +108,31 @@ ImageContainer::SetCurrentImage(Image *a
    mActiveImage = aImage;
    CurrentImageChanged();
  
@@ -34,66 +81,18 @@ diff --git a/gfx/layers/ImageLayers.cpp b/gfx/layers/ImageLayers.cpp
  }
  
 +void
-+ImageContainer::SetCurrentImageAsync(Image *aImage)
++ImageContainer::SetCurrentImageAsync(Image * aImage)
 +{
 +  if (!mImageBridgeChild) return;
-+  // TODO
-+
-+  // Copy aImage into a SharedImage 
-+
++  mActiveImage = aImage;
++  mImageBridgeChild->SendImageAsync(GetLayerID(), this);  
 +}
 +
-+void ImageContainer::CopyImageToShmem(Image * image)
++void ImageContainer::AddSharedImageToPool(SharedImage& aImage)
 +{
-+  // TODO: this is copy-pasted from BasciLayers.cpp and will be modified
-+  // to fit the ImageContainer's needs
-+
-+  // TODO: here's a bunch of variables that need to be set to the righ value
-+  gfxIntSize size;
-+  nsRefPtr<gfxSharedImageSurface> mBackBufferY;
-+  nsRefPtr<gfxSharedImageSurface> mBackBufferU;
-+  nsRefPtr<gfxSharedImageSurface> mBackBufferV;
-+  // TODO: I don't test for BasicManager()->IsCompositingCheap() here,
-+  // is this a problem?
-+  if (image->GetFormat() == Image::PLANAR_YCBCR ) {
-+    PlanarYCbCrImage *YCbCrImage = static_cast<PlanarYCbCrImage*>(image);
-+    const PlanarYCbCrImage::Data *data = YCbCrImage->GetData();
-+    NS_ASSERTION(data, "Must be able to retrieve yuv data from image!");
-+
-+    //DestroyBackBuffer();
-+    size = data->mYSize;
-+    //mCbCrSize = data->mCbCrSize;
-+
-+    if (!mImageBridgeChild->AllocBuffer(size, gfxASurface::CONTENT_ALPHA,
-+                                   getter_AddRefs(mBackBufferY)) ||
-+        !mImageBridgeChild->AllocBuffer(data->mCbCrSize, gfxASurface::CONTENT_ALPHA,
-+                                   getter_AddRefs(mBackBufferU)) ||
-+        !mImageBridgeChild->AllocBuffer(data->mCbCrSize, gfxASurface::CONTENT_ALPHA,
-+                                   getter_AddRefs(mBackBufferV))) {
-+      NS_RUNTIMEABORT("creating ImageLayer 'front buffer' failed!");
-+    }
-+
-+    for (int i = 0; i < data->mYSize.height; i++) {
-+      memcpy(mBackBufferY->Data() + i * mBackBufferY->Stride(),
-+             data->mYChannel + i * data->mYStride,
-+             data->mYSize.width);
-+    }
-+    for (int i = 0; i < data->mCbCrSize.height; i++) {
-+      memcpy(mBackBufferU->Data() + i * mBackBufferU->Stride(),
-+             data->mCbChannel + i * data->mCbCrStride,
-+             data->mCbCrSize.width);
-+      memcpy(mBackBufferV->Data() + i * mBackBufferV->Stride(),
-+             data->mCrChannel + i * data->mCbCrStride,
-+             data->mCbCrSize.width);
-+    }
-+
-+    ImageBridgeChild::YUVImage yuv(mBackBufferY->GetShmem(),
-+                 mBackBufferU->GetShmem(),
-+                 mBackBufferV->GetShmem(),
-+                 data->GetPictureRect());
-+
-+    // TODO: do something with yuv!
-+  }
++  // TODO: check that the size of the image corresponds and
++  // discard/delete it if not.
++  mSharedImagePool.Push(&aImage);
 +}
 +
  bool
@@ -107,7 +106,7 @@ diff --git a/gfx/layers/ImageLayers.cpp b/gfx/layers/ImageLayers.cpp
 diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
 --- a/gfx/layers/ImageLayers.h
 +++ b/gfx/layers/ImageLayers.h
-@@ -11,16 +11,17 @@
+@@ -11,16 +11,18 @@
  #include "nsISupportsImpl.h"
  #include "gfxPattern.h"
  #include "nsThreadUtils.h"
@@ -117,6 +116,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
  #include "mozilla/Mutex.h"
  #include "gfxPlatform.h"
 +#include "mozilla/LinkedList.h"
++#include "nsDeque.h"
  
  #ifdef XP_MACOSX
  #include "nsIOSurface.h"
@@ -125,7 +125,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
  struct ID3D10Texture2D;
  struct ID3D10Device;
  struct ID3D10ShaderResourceView;
-@@ -32,16 +33,19 @@ namespace mozilla {
+@@ -32,16 +34,20 @@ namespace mozilla {
  
  class CrossProcessMutex;
  namespace ipc {
@@ -136,6 +136,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
  
 +class ImageBridgeChild;
 +class SharedImage;
++class MediaSharedImage;
 +
  enum StereoMode {
    STEREO_MODE_MONO,
@@ -145,7 +146,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
    STEREO_MODE_TOP_BOTTOM
  };
  
-@@ -278,29 +282,32 @@ struct RemoteImageData {
+@@ -278,29 +284,32 @@ struct RemoteImageData {
  
  /**
   * A class that manages Images for an ImageLayer. The only reason
@@ -181,7 +182,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
     * Create an Image in one of the given formats.
     * Picks the "best" format from the list and creates an Image of that
     * format.
-@@ -321,16 +328,26 @@ public:
+@@ -321,16 +330,26 @@ public:
     * The Image data must not be modified after this method is called!
     *
     * Implementations must call CurrentImageChanged() while holding
@@ -208,7 +209,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
  
    /**
     * Lock the current Image.
-@@ -469,16 +486,34 @@ public:
+@@ -469,16 +488,40 @@ public:
    void SetRemoteImageData(RemoteImageData *aRemoteData,
                            CrossProcessMutex *aRemoteDataMutex);
    /**
@@ -218,11 +219,15 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
  
  protected:
 +
-+  ImageBridgeChild * GetImageBridgeChild() const 
++  // -------------- Async Image transfer
++  // The following methods are called internally by
++  // ImageContainer and/or ImageBridgeChild
++
++  ImageBridgeChild * GetImageBridge() const 
 +  {
 +    return mImageBridgeChild;
 +  }
-+  void SetImageBridgeChild(ImageBridgeChild * aBridge)
++  void SetImageBridge(ImageBridgeChild * aBridge)
 +  {
 +    mImageBridgeChild = aBridge;
 +  }
@@ -233,7 +238,9 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
 +    mLayerID = aLayerID; 
 +  }
 +
-+  void CopyImageToShmem(Image * aImage);
++  void AddSharedImageToPool(SharedImage& aImage);
++
++  // --------------
 +
    typedef mozilla::ReentrantMonitor ReentrantMonitor;
  
@@ -243,7 +250,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
    // calling this function!
    void EnsureActiveImage();
  
-@@ -524,16 +559,20 @@ protected:
+@@ -524,16 +567,21 @@ protected:
    RemoteImageData *mRemoteData;
  
    // This cross-process mutex is used to synchronise access to mRemoteData.
@@ -256,6 +263,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
 +  // ImageBridgeProtocol
 +  ImageBridgeChild * mImageBridgeChild;
 +  PRInt32 mLayerID;
++  nsDeque mSharedImagePool;
  };
   
  class AutoLockImage
@@ -299,11 +307,129 @@ diff --git a/gfx/layers/Makefile.in b/gfx/layers/Makefile.in
  endif #}
  
  ifdef MOZ_ENABLE_D3D10_LAYER
+diff --git a/gfx/layers/basic/BasicLayers.cpp b/gfx/layers/basic/BasicLayers.cpp
+--- a/gfx/layers/basic/BasicLayers.cpp
++++ b/gfx/layers/basic/BasicLayers.cpp
+@@ -2607,16 +2607,18 @@ private:
+   nsRefPtr<gfxSharedImageSurface> mBackBufferU;
+   nsRefPtr<gfxSharedImageSurface> mBackBufferV;
+   gfxIntSize mCbCrSize;
+ };
+  
+ void
+ BasicShadowableImageLayer::Paint(gfxContext* aContext, Layer* aMaskLayer)
+ {
++  return; // nical 
++  
+   if (!HasShadow()) {
+     BasicImageLayer::Paint(aContext, aMaskLayer);
+     return;
+   }
+ 
+   if (!mContainer) {
+     return;
+   }
+diff --git a/gfx/layers/ipc/CompositorParent.cpp b/gfx/layers/ipc/CompositorParent.cpp
+--- a/gfx/layers/ipc/CompositorParent.cpp
++++ b/gfx/layers/ipc/CompositorParent.cpp
+@@ -204,17 +204,20 @@ CompositorParent::ScheduleTask(Cancelabl
+   } else {
+     MessageLoop::current()->PostDelayedTask(FROM_HERE, task, time);
+   }
+ }
+ 
+ void
+ CompositorParent::ScheduleComposition()
+ {
++
++  printf("CompositorParent::ScheduleComposition\n");
+   if (mCurrentCompositeTask) {
++    printf("already mCurrentCompositeTask\n");
+     return;
+   }
+ 
+   bool initialComposition = mLastCompose.IsNull();
+   TimeDuration delta;
+   if (!initialComposition)
+     delta = mozilla::TimeStamp::Now() - mLastCompose;
+ 
+@@ -242,39 +245,43 @@ CompositorParent::SetTransformation(floa
+   mXScale = aScale;
+   mYScale = aScale;
+   mScrollOffset = aScrollOffset;
+ }
+ 
+ void
+ CompositorParent::Composite()
+ {
++  printf("Begin CompositorParent::Composite\n");
+   NS_ABORT_IF_FALSE(CompositorThreadID() == PlatformThread::CurrentId(),
+                     "Composite can only be called on the compositor thread");
+   mCurrentCompositeTask = NULL;
+ 
+   mLastCompose = mozilla::TimeStamp::Now();
+ 
+   if (mPaused || !mLayerManager || !mLayerManager->GetRoot()) {
++    printf("??????\n");
+     return;
+   }
+ 
+   TransformShadowTree();
+ 
+   Layer* aLayer = mLayerManager->GetRoot();
+   mozilla::layers::RenderTraceLayers(aLayer, "0000");
+ 
+   mLayerManager->EndEmptyTransaction();
+ 
+ #ifdef COMPOSITOR_PERFORMANCE_WARNING
+   if (mExpectedComposeTime + TimeDuration::FromMilliseconds(15) < mozilla::TimeStamp::Now()) {
+     printf_stderr("Compositor: Composite took %i ms.\n",
+                   15 + (int)(mozilla::TimeStamp::Now() - mExpectedComposeTime).ToMilliseconds());
+   }
+ #endif
++
++  printf("End CompositorParent::Composite\n");
+ }
+ 
+ // Do a breadth-first search to find the first layer in the tree that is
+ // scrollable.
+ Layer*
+ CompositorParent::GetPrimaryScrollableLayer()
+ {
+   Layer* root = mLayerManager->GetRoot();
+diff --git a/gfx/layers/ipc/CompositorParent.h b/gfx/layers/ipc/CompositorParent.h
+--- a/gfx/layers/ipc/CompositorParent.h
++++ b/gfx/layers/ipc/CompositorParent.h
+@@ -72,22 +72,23 @@ public:
+   void SetTransformation(float aScale, nsIntPoint aScrollOffset);
+   void AsyncRender();
+ 
+   // Can be called from any thread
+   void ScheduleRenderOnCompositorThread();
+   void SchedulePauseOnCompositorThread();
+   void ScheduleResumeOnCompositorThread(int width, int height);
+ 
++  virtual void ScheduleComposition();
++  
+ protected:
+   virtual PLayersParent* AllocPLayers(const LayersBackend& aBackendType, int* aMaxTextureSize);
+   virtual bool DeallocPLayers(PLayersParent* aLayers);
+   virtual void ScheduleTask(CancelableTask*, int);
+   virtual void Composite();
+-  virtual void ScheduleComposition();
+   virtual void SetFirstPaintViewport(const nsIntPoint& aOffset, float aZoom, const nsIntRect& aPageRect, const gfx::Rect& aCssPageRect);
+   virtual void SetPageRect(float aZoom, const nsIntRect& aPageRect, const gfx::Rect& aCssPageRect);
+   virtual void SyncViewportInfo(const nsIntRect& aDisplayPort, float aDisplayResolution, bool aLayersUpdated,
+                                 nsIntPoint& aScrollOffset, float& aScaleX, float& aScaleY);
+   void SetEGLSurfaceSize(int width, int height);
+ 
+ private:
+   void PauseComposition();
 diff --git a/gfx/layers/ipc/ImageBridgeChild.cpp b/gfx/layers/ipc/ImageBridgeChild.cpp
 new file mode 100644
 --- /dev/null
 +++ b/gfx/layers/ipc/ImageBridgeChild.cpp
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,313 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -312,7 +438,7 @@ new file mode 100644
 +#include "ImageBridgeChild.h"
 +#include "ImageBridgeParent.h"
 +#include "gfxSharedImageSurface.h"
-+
++#include "ImageLayers.h"
 +#include "base/thread.h"
 +
 +// temporary: kinda nice for me while the patch is not 
@@ -325,6 +451,9 @@ new file mode 100644
 +
 +namespace mozilla {
 +namespace layers {
++
++static int _debug_sharedAllocCount = 0;
++static int _fake_layerID = 0;
 +
 +ImageBridgeChild::ImageBridgeChild(base::Thread& aThread)
 +{
@@ -347,7 +476,7 @@ new file mode 100644
 +                                               const ImageBridgeChild::SharedImage& aImage)
 +{
 +  printf("\033[1;34m -- ImageBridgeChild: received an image (layerID: %i) \033[0m\n", aLayerID);
-+  NOT_IMPLEMENTED
++  DestroySharedImage((MediaSharedImage&)aImage);
 +  return true;
 +}
 +
@@ -362,8 +491,19 @@ new file mode 100644
 +
 +void ImageBridgeChild::DestroySharedImage(ImageBridgeChild::SharedImage& aImage)
 +{
-+  NOT_IMPLEMENTED
-+  // TODO
++  _debug_sharedAllocCount--;
++  printf("after deallocation: count is %i\n", _debug_sharedAllocCount);
++  
++  if (aImage.type() == MediaSharedImage::TMediaYUVImage) {
++    printf("\n\ndeallocate YUV shmems\n\n");
++    DeallocShmem(aImage.get_MediaYUVImage().Ydata());
++    DeallocShmem(aImage.get_MediaYUVImage().Udata());
++    DeallocShmem(aImage.get_MediaYUVImage().Vdata());
++  } else if (aImage.type() == MediaSharedImage::TMediaSurfaceDescriptor) {
++    printf("\ndeallocate SurfaceDescriptor shmem\n\n");
++    DeallocShmem(aImage.get_MediaSurfaceDescriptor().get_Shmem());
++  }
++
 +}
 +
 +bool ImageBridgeChild::InImageBridgeChildThread() const {
@@ -372,16 +512,18 @@ new file mode 100644
 +
 +void ImageBridgeChild::AddImageContainer(ImageContainer& aImageContainer)
 +{
-+  NS_ASSERTION(InImageBridgeChildThread(),"Shoudl be in ImageBridgeChild thread!");
++  NS_ASSERTION(InImageBridgeChildThread(),"Should be in ImageBridgeChild thread!");
++  if (aImageContainer.GetImageBridge() == this) return;
++
 +  mImageContainers.insertBack(&aImageContainer);
-+  aImageContainer.SetImageBridgeChild(this);
++  aImageContainer.SetImageBridge(this);
 +}
 +
 +void ImageBridgeChild::RemoveImageContainer(ImageContainer& aImageContainer)
 +{
 +  NS_ASSERTION(InImageBridgeChildThread(),"Shoudl be in ImageBridgeChild thread!");
 +  aImageContainer.remove();
-+  aImageContainer.SetImageBridgeChild(nsnull);
++  aImageContainer.SetImageBridge(nsnull);
 +}
 +
 +void ImageBridgeChild::RemoveAllImageContainers()
@@ -396,14 +538,14 @@ new file mode 100644
 +
 +
 +bool ImageBridgeChild::AllocBuffer(const gfxIntSize& aSize,
-+                              gfxASurface::gfxContentType aContent,
-+                              gfxSharedImageSurface** aBuffer)
++                                   gfxASurface::gfxContentType aContent,
++                                   gfxSharedImageSurface** aBuffer)
 +{
 +  SharedMemory::SharedMemoryType shmemType = ipc::OptimalShmemType();
 +  gfxASurface::gfxImageFormat format = gfxPlatform::GetPlatform()->OptimalFormatForContent(aContent);
 +
 +  nsRefPtr<gfxSharedImageSurface> back =
-+    gfxSharedImageSurface::CreateUnsafe(this, aSize, format, shmemType);
++    gfxSharedImageSurface::Create(this, aSize, format, shmemType);
 +  if (!back)
 +    return false;
 +
@@ -411,6 +553,63 @@ new file mode 100644
 +  back.swap(*aBuffer);
 +  return true;
 +}
++
++ImageBridgeChild::SharedImage* ImageBridgeChild::CopyImageIntoSharedImage(Image* image)
++{
++  printf("before allocation: count is %i\n", _debug_sharedAllocCount);
++  _debug_sharedAllocCount++;
++  /* how to access buffer directly into a SharedImage:
++    unsigned char * yBufferData = dest->get_MediSharedImage().Ydata().get<unsigned char>();
++    unsigned char * uBufferData = dest->get_MediSharedImage().Udata().get<unsigned char>();
++    unsigned char * vBufferData = dest->get_MediSharedImage().Vdata().get<unsigned char>();
++  */
++  // TODO: I don't test for BasicManager()->IsCompositingCheap() here,
++  // is this a problem?
++  if (image->GetFormat() == Image::PLANAR_YCBCR ) {
++    PlanarYCbCrImage *YCbCrImage = static_cast<PlanarYCbCrImage*>(image);
++    const PlanarYCbCrImage::Data *data = YCbCrImage->GetData();
++    NS_ASSERTION(data, "Must be able to retrieve yuv data from image!");
++    
++    // TODO: make sure the shmems dont gfet destroyed along with the temp surfaces
++    // ath the end of this scope
++    nsRefPtr<gfxSharedImageSurface> tempBufferY;
++    nsRefPtr<gfxSharedImageSurface> tempBufferU;
++    nsRefPtr<gfxSharedImageSurface> tempBufferV;
++    
++    if (!this->AllocBuffer(data->mYSize, gfxASurface::CONTENT_ALPHA,
++                           getter_AddRefs(tempBufferY)) ||
++        !this->AllocBuffer(data->mCbCrSize, gfxASurface::CONTENT_ALPHA,
++                           getter_AddRefs(tempBufferU)) ||
++        !this->AllocBuffer(data->mCbCrSize, gfxASurface::CONTENT_ALPHA,
++                           getter_AddRefs(tempBufferV))) {
++      NS_RUNTIMEABORT("creating SharedImage failed!");
++    }
++
++    for (int i = 0; i < data->mYSize.height; i++) {
++      memcpy(tempBufferY->Data() + i * tempBufferY->Stride(),
++             data->mYChannel + i * data->mYStride,
++             data->mYSize.width);
++    }
++    for (int i = 0; i < data->mCbCrSize.height; i++) {
++      memcpy(tempBufferU->Data() + i * tempBufferU->Stride(),
++             data->mCbChannel + i * data->mCbCrStride,
++             data->mCbCrSize.width);
++      memcpy(tempBufferV->Data() + i * tempBufferV->Stride(),
++             data->mCrChannel + i * data->mCbCrStride,
++             data->mCbCrSize.width);
++    }
++
++    return new ImageBridgeChild::SharedImage( 
++              *(new ImageBridgeChild::YUVImage(tempBufferY->GetShmem(),
++                                             tempBufferU->GetShmem(),
++                                             tempBufferV->GetShmem(),
++                                             data->GetPictureRect())));
++  } else {
++    NS_RUNTIMEABORT("Only YUVImage is supported here right now");
++  }
++  return nsnull;
++}
++
 +
 +
 +// async opertations:
@@ -423,15 +622,13 @@ new file mode 100644
 +
 +  void Run()
 +  {
-+    MessageLoop * parentMsgLoop = mParent->GetThread()->message_loop();
-+    ipc::AsyncChannel * parentChannel = mParent->GetIPCChannel();
-+    mChild->Open(parentChannel, parentMsgLoop, mozilla::ipc::AsyncChannel::Child);
++    mChild->ConnectNow(mParent);
 +  }
 +private:
 +  ImageBridgeChild * mChild;
 +  ImageBridgeParent * mParent;
 +};
-+
++/*
 +class ImageBridgeSendTask : public Task
 +{
 +public:
@@ -449,20 +646,99 @@ new file mode 100644
 +  ImageBridgeChild::SharedImage * mImage;
 +  PRInt32 mLayerID;
 +};
-+
-+void ImageBridgeChild::AsyncConnect(ImageBridgeParent& aParent)
++*/
++class ImageBridgeCopyAndSendTask : public Task
 +{
-+  Task * t = new ImageBridgeConnectionTask(this, &aParent);
++public:
++  ImageBridgeCopyAndSendTask(ImageBridgeChild * child, 
++                             PRInt32 aLayerID,
++                             Image * aImage)
++  : mChild(child), mImage(aImage), mLayerID(aLayerID) {}
++
++  void Run()
++  {
++    _fake_layerID++;
++    printf("ImageBridgeCopyAndSendTask ID:%i\n",_fake_layerID);
++    ImageBridgeChild::SharedImage* img = 
++        mChild->CopyImageIntoSharedImage(mImage);
++    mChild->SendPushSharedImage(_fake_layerID, *img);
++  }
++private:
++  ImageBridgeChild * mChild;
++  Image * mImage;
++  PRInt32 mLayerID;
++};
++
++enum {CONTAINER_ADD, CONTAINER_REMOVE, CONTAINER_REMOVE_ALL};
++
++class ImageBridgeContainerTask : public Task
++{
++public:
++  ImageBridgeContainerTask(ImageBridgeChild * child, 
++                           ImageContainer * aContainer,
++                           int aOperation)
++  : mChild(child), mContainer(aContainer), mOperation(aOperation) {}
++
++  void Run()
++  {
++    if (mOperation == CONTAINER_ADD)
++      mChild->AddImageContainer(*mContainer);
++    else if (mOperation == CONTAINER_REMOVE)
++      mChild->RemoveImageContainer(*mContainer);
++    else if (mOperation == CONTAINER_REMOVE_ALL)
++      mChild->RemoveAllImageContainers();
++  }
++private:
++  ImageBridgeChild * mChild;
++  nsRefPtr<ImageContainer> mContainer;
++  int mOperation;
++};
++
++void ImageBridgeChild::ConnectNow(ImageBridgeParent* aParent)
++{
++    MessageLoop * parentMsgLoop = aParent->GetThread()->message_loop();
++    ipc::AsyncChannel * parentChannel = aParent->GetIPCChannel();
++    this->Open(parentChannel, parentMsgLoop, mozilla::ipc::AsyncChannel::Child);
++}
++
++void ImageBridgeChild::ConnectAsync(ImageBridgeParent* aParent)
++{
++  Task * t = new ImageBridgeConnectionTask(this, aParent);
 +  GetThread()->message_loop()->PostTask(FROM_HERE, t);
 +}
 +
-+void ImageBridgeChild::AsyncSendSharedImage(PRInt32 aLayerID,
++void ImageBridgeChild::SendImageAsync(PRInt32 aLayerID,
++                                      ImageContainer* aContainer)
++{
++  AutoLockImage autolock(aContainer);
++  Task * t = new ImageBridgeCopyAndSendTask(this, aLayerID, autolock.GetImage());
++  GetThread()->message_loop()->PostTask(FROM_HERE, t);
++}
++
++/*
++void ImageBridgeChild::SendSharedImageAsync(PRInt32 aLayerID,
 +                                            ImageBridgeChild::SharedImage& aImage)
 +{
 +  Task * t = new ImageBridgeSendTask(this, aLayerID, &aImage);
 +  GetThread()->message_loop()->PostTask(FROM_HERE, t);
 +}
++*/
++void ImageBridgeChild::AddImageContainerAsync(ImageContainer& toAdd)
++{
++  Task * t = new ImageBridgeContainerTask(this, &toAdd, CONTAINER_ADD);
++  GetThread()->message_loop()->PostTask(FROM_HERE, t);  
++}
++void ImageBridgeChild::RemoveImageContainerAsync(ImageContainer& toRemove)
++{
++  Task * t = new ImageBridgeContainerTask(this, &toRemove, CONTAINER_REMOVE);
++  GetThread()->message_loop()->PostTask(FROM_HERE, t);  
++}
 +
++void ImageBridgeChild::RemoveAllImageContainersAsync()
++{
++  Task * t = new ImageBridgeContainerTask(this, nsnull, CONTAINER_REMOVE_ALL);
++  GetThread()->message_loop()->PostTask(FROM_HERE, t);  
++}
 +
 +
 +} // layers
@@ -472,7 +748,7 @@ diff --git a/gfx/layers/ipc/ImageBridgeChild.h b/gfx/layers/ipc/ImageBridgeChild
 new file mode 100644
 --- /dev/null
 +++ b/gfx/layers/ipc/ImageBridgeChild.h
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,119 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -492,11 +768,17 @@ new file mode 100644
 +namespace layers {
 +
 +class ImageBridgeParent;
++class ImageBridgeContainerTask;
++class ImageBridgeCopyAndSendTask;
++class ImageBridgeConnectionTask;
 +
 +class ImageBridgeChild : public PImageBridgeChild
 +{
 +// NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VideoBridgeChild)
 +friend class mozilla::layers::ImageContainer;
++friend class mozilla::layers::ImageBridgeContainerTask;
++friend class mozilla::layers::ImageBridgeCopyAndSendTask;
++friend class mozilla::layers::ImageBridgeConnectionTask;
 +public:
 +  typedef PRInt32 CompositorID_t;
 +  typedef PRInt32 LayerID_t;
@@ -515,8 +797,8 @@ new file mode 100644
 +  
 +  // Temporary, not suitable for cross-process layers
 +  // can be called from any thread
-+  void AsyncConnect(ImageBridgeParent& aParent);
-+
++  void ConnectAsync(ImageBridgeParent* aParent);
++  
 +  
 +  /**
 +   * Returns the ImageBrdugeChild's thread.
@@ -535,15 +817,26 @@ new file mode 100644
 +   */
 +  bool InImageBridgeChildThread() const;
 +
++  void AddImageContainerAsync(ImageContainer& toAdd);
++  void RemoveImageContainerAsync(ImageContainer& toAdd);
++  void RemoveAllImageContainersAsync();
++
 +private:
 +
++  /** 
++   * must be called in the ImageBridgeChild thread.
++   */
++  void ConnectNow(ImageBridgeParent* aParent);
 +  /**
 +   * Dispatch a task in the ImageBridgeChild thread to send an 
 +   * image through IPC to the compositor.
 +   *
 +   * Can be called from any thread.
 +   */
-+  void AsyncSendSharedImage(PRInt32 aLayerID, SharedImage& aSurface);
++  void SendSharedImageAsync(PRInt32 aLayerID, SharedImage& aSurface);
++  void SendImageAsync(PRInt32 aLayerID, ImageContainer* aImage);
++
++  SharedImage * CopyImageIntoSharedImage(Image* aImage);
 +
 +  /**
 +   * Same as ShadowLayerForwarder::AllocBuffer.
@@ -580,30 +873,46 @@ diff --git a/gfx/layers/ipc/ImageBridgeParent.cpp b/gfx/layers/ipc/ImageBridgePa
 new file mode 100644
 --- /dev/null
 +++ b/gfx/layers/ipc/ImageBridgeParent.cpp
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,72 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +#include "ImageBridgeParent.h"
++#include "CompositorParent.h"
 +
 +#include "base/thread.h"
 +
++#include "mozilla/layers/ShadowLayers.h" // temp
++#include "mozilla/layers/RenderTrace.h" // temp
++
 +namespace mozilla {
 +namespace layers {
++
++MediaSharedImage* _current_shared_image_hack = 0;
 +
 +bool ImageBridgeParent::RecvPushSharedImage(const LayerID_t& aLayerID, 
 +                                            const MediaSharedImage& aImage)
 +{
 +  printf("ImageBridgeParent::RecvPushSharedImage (layerID: %i)\n", aLayerID);
 +  // TODO
++  if (ShadowImageLayer::_shadow_image_layer_hack) {
++    ShadowImageLayer::_shadow_image_layer_hack->SetImageBridgeParent(this);
++    ShadowImageLayer::_shadow_image_layer_hack->_hacked_Swap(aImage);
++    mCompositorParent->ScheduleComposition();
++    //Layer* aLayer = mCompositorParent->GetLayerManager()->GetRoot();
++    //mozilla::layers::RenderTraceLayers(aLayer, "0000");
++
++  }
++
 +  SendReleasedSharedImage(aLayerID,aImage);
 +  return true;
 +}
 +
-+ImageBridgeParent::ImageBridgeParent(base::Thread& aThread)
-+: mThread(&aThread)
++ImageBridgeParent::ImageBridgeParent(base::Thread& aThread, CompositorParent* aCompositor)
++: mThread(&aThread),
++  mCompositorParent(aCompositor)
 +{
 +
 +}
@@ -642,7 +951,7 @@ diff --git a/gfx/layers/ipc/ImageBridgeParent.h b/gfx/layers/ipc/ImageBridgePare
 new file mode 100644
 --- /dev/null
 +++ b/gfx/layers/ipc/ImageBridgeParent.h
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,56 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -660,6 +969,7 @@ new file mode 100644
 +namespace layers {
 +
 +class ImageBridgeChild;
++class CompositorParent;
 +
 +class ImageBridgeParent : public PImageBridgeParent
 +{
@@ -670,7 +980,7 @@ new file mode 100644
 +  typedef MediaSharedImage SharedImage;
 +  // IPDL protocol
 +
-+  ImageBridgeParent(base::Thread& aThread);
++  ImageBridgeParent(base::Thread& aThread, CompositorParent* aCompositor);
 +  ~ImageBridgeParent();
 +
 +  // override
@@ -693,6 +1003,7 @@ new file mode 100644
 +  base::Thread * mThread; //should be the compositor thread
 +  LinkedList<ShadowImageLayer> mShadowLayers;
 +  // TODO: a list of ShadowImageLayers here
++  CompositorParent * mCompositorParent;
 +};
 +
 +} // layers
@@ -765,6 +1076,46 @@ new file mode 100644
 +} //namespace
 +} //namespace
 \ No newline at end of file
+diff --git a/gfx/layers/ipc/ShadowLayers.cpp b/gfx/layers/ipc/ShadowLayers.cpp
+--- a/gfx/layers/ipc/ShadowLayers.cpp
++++ b/gfx/layers/ipc/ShadowLayers.cpp
+@@ -26,16 +26,18 @@ using namespace mozilla::ipc;
+ 
+ namespace mozilla {
+ namespace layers {
+ 
+ typedef nsTArray<SurfaceDescriptor> BufferArray; 
+ typedef std::vector<Edit> EditVector;
+ typedef std::set<ShadowableLayer*> ShadowableLayerSet;
+ 
++ShadowImageLayer * ShadowImageLayer::_shadow_image_layer_hack = 0;
++
+ class Transaction
+ {
+ public:
+   Transaction()
+     : mSwapRequired(false)
+     , mOpen(false)
+   {}
+ 
+@@ -105,16 +107,17 @@ struct AutoTxnEnd {
+   Transaction* mTxn;
+ };
+ 
+ ShadowLayerForwarder::ShadowLayerForwarder()
+  : mShadowManager(NULL)
+  , mMaxTextureSize(0)
+  , mParentBackend(LayerManager::LAYERS_NONE)
+  , mIsFirstPaint(false)
++ , mImageBridgeChild(NULL)
+ {
+   mTxn = new Transaction();
+ }
+ 
+ ShadowLayerForwarder::~ShadowLayerForwarder()
+ {
+   NS_ABORT_IF_FALSE(mTxn->Finished(), "unfinished transaction?");
+   delete mTxn;
 diff --git a/gfx/layers/ipc/ShadowLayers.h b/gfx/layers/ipc/ShadowLayers.h
 --- a/gfx/layers/ipc/ShadowLayers.h
 +++ b/gfx/layers/ipc/ShadowLayers.h
@@ -786,7 +1137,7 @@ diff --git a/gfx/layers/ipc/ShadowLayers.h b/gfx/layers/ipc/ShadowLayers.h
  
  class Edit;
  class EditReply;
-@@ -32,16 +33,17 @@ class ShadowColorLayer;
+@@ -32,16 +33,19 @@ class ShadowColorLayer;
  class ShadowCanvasLayer;
  class SurfaceDescriptor;
  class ThebesBuffer;
@@ -796,6 +1147,8 @@ diff --git a/gfx/layers/ipc/ShadowLayers.h b/gfx/layers/ipc/ShadowLayers.h
  class CanvasSurface;
  class BasicTiledLayerBuffer;
 +class ImageBridgeParent;
++class ImageBridgeChild;
++
  
  /**
   * We want to share layer trees across thread contexts and address
@@ -804,7 +1157,47 @@ diff --git a/gfx/layers/ipc/ShadowLayers.h b/gfx/layers/ipc/ShadowLayers.h
   *  - a parent process can paint a child process's layer tree while
   *    the child process is blocked, say on content script.  This is
   *    important on mobile devices where UI responsiveness is key.
-@@ -561,35 +563,54 @@ public:
+@@ -295,16 +299,19 @@ public:
+   /**
+    * Flag the next paint as the first for a document.
+    */
+   void SetIsFirstPaint() { mIsFirstPaint = true; }
+ 
+   virtual PRInt32 GetMaxTextureSize() const { return mMaxTextureSize; }
+   void SetMaxTextureSize(PRInt32 aMaxTextureSize) { mMaxTextureSize = aMaxTextureSize; }
+ 
++  void SetImageBridge(ImageBridgeChild* aBridge) { mImageBridgeChild = aBridge; }
++  ImageBridgeChild* GetImageBridge() const { return mImageBridgeChild; }
++
+ protected:
+   ShadowLayerForwarder();
+ 
+   PLayersChild* mShadowManager;
+ 
+ private:
+   bool PlatformAllocDoubleBuffer(const gfxIntSize& aSize,
+                                    gfxASurface::gfxContentType aContent,
+@@ -322,16 +329,18 @@ private:
+ 
+   static void PlatformSyncBeforeUpdate();
+ 
+   Transaction* mTxn;
+   PRInt32 mMaxTextureSize;
+   LayersBackend mParentBackend;
+ 
+   bool mIsFirstPaint;
++
++  ImageBridgeChild * mImageBridgeChild;
+ };
+ 
+ 
+ class ShadowLayerManager : public LayerManager
+ {
+ public:
+   virtual ~ShadowLayerManager() {}
+ 
+@@ -560,36 +569,60 @@ public:
+   MOZ_LAYER_DECL_NAME("ShadowCanvasLayer", TYPE_SHADOW)
  
  protected:
    ShadowCanvasLayer(LayerManager* aManager, void* aImplData)
@@ -812,6 +1205,7 @@ diff --git a/gfx/layers/ipc/ShadowLayers.h b/gfx/layers/ipc/ShadowLayers.h
    {}
  };
  
++class MediaSharedImage;
  
 -class ShadowImageLayer : public ShadowLayer,
 +class ShadowImageLayer : public LinkedListElement<ShadowImageLayer>,
@@ -827,14 +1221,20 @@ diff --git a/gfx/layers/ipc/ShadowLayers.h b/gfx/layers/ipc/ShadowLayers.h
    virtual void Swap(const SharedImage& aFront,
                      SharedImage* aNewBack) = 0;
  
++  virtual void _hacked_Swap(const MediaSharedImage& aFront) {}
++
    virtual ShadowLayer* AsShadowLayer() { return this; }
  
    MOZ_LAYER_DECL_NAME("ShadowImageLayer", TYPE_SHADOW)
- 
+-
++  static ShadowImageLayer* _shadow_image_layer_hack; // nical
  protected:
    ShadowImageLayer(LayerManager* aManager, void* aImplData)
      : ImageLayer(aManager, aImplData)
-   {}
+-  {}
++  {
++    _shadow_image_layer_hack = this;
++  }
 +
 +  // called by ImageBridgeParent
 +  ImageBridgeParent * GetImageBridgeParent() const 
@@ -874,3 +1274,339 @@ diff --git a/gfx/layers/ipc/ipdl.mk b/gfx/layers/ipc/ipdl.mk
    PLayers.ipdl \
 +  PImageBridge.ipdl \
    $(NULL)
+diff --git a/gfx/layers/opengl/ImageLayerOGL.cpp b/gfx/layers/opengl/ImageLayerOGL.cpp
+--- a/gfx/layers/opengl/ImageLayerOGL.cpp
++++ b/gfx/layers/opengl/ImageLayerOGL.cpp
+@@ -1,15 +1,15 @@
+ /* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+  * This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include "gfxSharedImageSurface.h"
+-
++#include "mozilla/layers/ImageBridgeParent.h"
+ #include "ImageLayerOGL.h"
+ #include "gfxImageSurface.h"
+ #include "gfxUtils.h"
+ #include "yuv_convert.h"
+ #include "GLContextProvider.h"
+ #if defined(MOZ_WIDGET_GTK2) && !defined(MOZ_PLATFORM_MAEMO)
+ # include "GLXLibrary.h"
+ # include "mozilla/X11Util.h"
+@@ -646,16 +646,50 @@ ShadowImageLayerOGL::ShadowImageLayerOGL
+ {
+   mImplData = static_cast<LayerOGL*>(this);
+ }
+ 
+ ShadowImageLayerOGL::~ShadowImageLayerOGL()
+ {}
+ 
+ bool
++ShadowImageLayerOGL::_hack_Init(const MediaSharedImage& aFront)
++{
++  MediaYUVImage yuv = aFront.get_MediaYUVImage();
++
++  nsRefPtr<gfxSharedImageSurface> surfY =
++    gfxSharedImageSurface::Open(yuv.Ydata());
++  nsRefPtr<gfxSharedImageSurface> surfU =
++    gfxSharedImageSurface::Open(yuv.Udata());
++  nsRefPtr<gfxSharedImageSurface> surfV =
++    gfxSharedImageSurface::Open(yuv.Vdata());
++
++  mSize = surfY->GetSize();
++  mCbCrSize = surfU->GetSize();
++
++  if (!mYUVTexture[0].IsAllocated()) {
++    mYUVTexture[0].Allocate(gl());
++    mYUVTexture[1].Allocate(gl());
++    mYUVTexture[2].Allocate(gl());
++  }
++
++  NS_ASSERTION(mYUVTexture[0].IsAllocated() &&
++               mYUVTexture[1].IsAllocated() &&
++               mYUVTexture[2].IsAllocated(),
++               "Texture allocation failed!");
++
++  gl()->MakeCurrent();
++  SetClamping(gl(), mYUVTexture[0].GetTextureID());
++  SetClamping(gl(), mYUVTexture[1].GetTextureID());
++  SetClamping(gl(), mYUVTexture[2].GetTextureID());
++  return true;
++}
++
++
++bool
+ ShadowImageLayerOGL::Init(const SharedImage& aFront)
+ {
+   if (aFront.type() == SharedImage::TSurfaceDescriptor) {
+     SurfaceDescriptor desc = aFront.get_SurfaceDescriptor();
+     nsRefPtr<gfxASurface> surf =
+       ShadowLayerForwarder::OpenDescriptor(desc);
+     mSize = surf->GetSize();
+     mTexImage = gl()->CreateTextureImage(nsIntSize(mSize.width, mSize.height),
+@@ -693,20 +727,56 @@ ShadowImageLayerOGL::Init(const SharedIm
+     SetClamping(gl(), mYUVTexture[0].GetTextureID());
+     SetClamping(gl(), mYUVTexture[1].GetTextureID());
+     SetClamping(gl(), mYUVTexture[2].GetTextureID());
+     return true;
+   }
+   return false;
+ }
+ 
++void ShadowImageLayerOGL::_hacked_Swap(const MediaSharedImage& aNewFront)
++{
++  if (!mDestroyed) {
++    const MediaYUVImage& yuv = aNewFront.get_MediaYUVImage();
++
++    nsRefPtr<gfxSharedImageSurface> surfY =
++      gfxSharedImageSurface::Open(yuv.Ydata());
++    nsRefPtr<gfxSharedImageSurface> surfU =
++      gfxSharedImageSurface::Open(yuv.Udata());
++    nsRefPtr<gfxSharedImageSurface> surfV =
++      gfxSharedImageSurface::Open(yuv.Vdata());
++    mPictureRect = yuv.picture();
++
++    gfxIntSize size = surfY->GetSize();
++    gfxIntSize CbCrSize = surfU->GetSize();
++    if (size != mSize || mCbCrSize != CbCrSize || !mYUVTexture[0].IsAllocated()) {
++      _hack_Init(aNewFront);
++    }
++
++    PlanarYCbCrImage::Data data;
++    data.mYChannel = surfY->Data();
++    data.mYStride = surfY->Stride();
++    data.mYSize = surfY->GetSize();
++    data.mCbChannel = surfU->Data();
++    data.mCrChannel = surfV->Data();
++    data.mCbCrStride = surfU->Stride();
++    data.mCbCrSize = surfU->GetSize();
++
++    UploadYUVToTexture(gl(), data, &mYUVTexture[0], &mYUVTexture[1], &mYUVTexture[2]);
++  }
++}
++
+ void
+ ShadowImageLayerOGL::Swap(const SharedImage& aNewFront,
+                           SharedImage* aNewBack)
+ {
++  //if (GetImageBridgeParent()) {
++    printf("---- WTF! ShadowImageLayerOGL::Swap called while using image bridge\n");
++    return;
++  //} 
+   if (!mDestroyed) {
+     if (aNewFront.type() == SharedImage::TSurfaceDescriptor) {
+       nsRefPtr<gfxASurface> surf =
+         ShadowLayerForwarder::OpenDescriptor(aNewFront.get_SurfaceDescriptor());
+       gfxIntSize size = surf->GetSize();
+       if (mSize != size || !mTexImage ||
+           mTexImage->GetContentType() != surf->GetContentType()) {
+         Init(aNewFront);
+diff --git a/gfx/layers/opengl/ImageLayerOGL.h b/gfx/layers/opengl/ImageLayerOGL.h
+--- a/gfx/layers/opengl/ImageLayerOGL.h
++++ b/gfx/layers/opengl/ImageLayerOGL.h
+@@ -156,31 +156,35 @@ class ShadowImageLayerOGL : public Shado
+ public:
+   ShadowImageLayerOGL(LayerManagerOGL* aManager);
+   virtual ~ShadowImageLayerOGL();
+ 
+   // ShadowImageLayer impl
+   virtual void Swap(const SharedImage& aFront,
+                     SharedImage* aNewBack);
+ 
++  virtual void _hacked_Swap(const MediaSharedImage& aFront);
++
++
+   virtual void Disconnect();
+ 
+   // LayerOGL impl
+   virtual void Destroy();
+   virtual bool LoadAsTexture(GLuint aTextureUnit, gfxIntSize* aSize);
+ 
+   virtual Layer* GetLayer();
+ 
+   virtual void RenderLayer(int aPreviousFrameBuffer,
+                            const nsIntPoint& aOffset);
+ 
+   virtual void CleanupResources();
+ 
+ private:
+   bool Init(const SharedImage& aFront);
++  bool _hack_Init(const MediaSharedImage& aFront);
+ 
+   nsRefPtr<TextureImage> mTexImage;
+   GLTexture mYUVTexture[3];
+   gfxIntSize mSize;
+   gfxIntSize mCbCrSize;
+   nsIntRect mPictureRect;
+ };
+ 
+diff --git a/gfx/layers/opengl/LayerManagerOGL.cpp b/gfx/layers/opengl/LayerManagerOGL.cpp
+--- a/gfx/layers/opengl/LayerManagerOGL.cpp
++++ b/gfx/layers/opengl/LayerManagerOGL.cpp
+@@ -699,16 +699,17 @@ LayerManagerOGL::BindAndDrawQuadWithText
+     }
+     mGLContext->fDisableVertexAttribArray(texCoordAttribIndex);
+   }
+ }
+ 
+ void
+ LayerManagerOGL::Render()
+ {
++  printf("LayerManagerOGL::Render\n");
+   SAMPLE_LABEL("LayerManagerOGL", "Render");
+   if (mDestroyed) {
+     NS_WARNING("Call on destroyed layer manager");
+     return;
+   }
+ 
+   nsIntRect rect;
+   if (mIsRenderingToEGLSurface) {
+diff --git a/layout/generic/nsVideoFrame.cpp b/layout/generic/nsVideoFrame.cpp
+--- a/layout/generic/nsVideoFrame.cpp
++++ b/layout/generic/nsVideoFrame.cpp
+@@ -1,16 +1,18 @@
+ /* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+ /* vim:set ts=2 sw=2 sts=2 et cindent: */
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ /* rendering object for the HTML <video> element */
+ 
++#include "mozilla/layers/ImageBridgeChild.h"
++
+ #include "nsHTMLParts.h"
+ #include "nsCOMPtr.h"
+ #include "nsIServiceManager.h"
+ #include "nsGkAtoms.h"
+ 
+ #include "nsVideoFrame.h"
+ #include "nsHTMLVideoElement.h"
+ #include "nsIDOMHTMLVideoElement.h"
+@@ -22,16 +24,17 @@
+ #include "nsTransform2D.h"
+ #include "nsContentCreatorFunctions.h"
+ #include "nsBoxLayoutState.h"
+ #include "nsBoxFrame.h"
+ #include "nsImageFrame.h"
+ #include "nsIImageLoadingContent.h"
+ #include "nsCSSRendering.h"
+ #include "nsContentUtils.h"
++#include "mozilla/layers/ShadowLayers.h"
+ 
+ #ifdef ACCESSIBILITY
+ #include "nsAccessibilityService.h"
+ #endif
+ 
+ using namespace mozilla;
+ using namespace mozilla::layers;
+ using namespace mozilla::dom;
+@@ -162,16 +165,23 @@ nsVideoFrame::BuildLayer(nsDisplayListBu
+   nsIntSize videoSize;
+   if (NS_FAILED(element->GetVideoSize(&videoSize)) || area.IsEmpty()) {
+     return nsnull;
+   }
+ 
+   nsRefPtr<ImageContainer> container = element->GetImageContainer();
+   if (!container)
+     return nsnull;
++
++  // TODO this is most likely not the right place to do this
++  // if omtc
++  if (aManager->AsShadowForwarder() && aManager->AsShadowForwarder()->HasShadowManager()) {
++    ImageBridgeChild* bridge = aManager->AsShadowForwarder()->GetImageBridge();
++    bridge->AddImageContainerAsync(*container.get());
++  }
+   
+   // Retrieve the size of the decoded video frame, before being scaled
+   // by pixel aspect ratio.
+   gfxIntSize frameSize = container->GetCurrentSize();
+   if (frameSize.width == 0 || frameSize.height == 0) {
+     // No image, or zero-sized image. No point creating a layer.
+     return nsnull;
+   }
+diff --git a/widget/xpwidgets/nsBaseWidget.cpp b/widget/xpwidgets/nsBaseWidget.cpp
+--- a/widget/xpwidgets/nsBaseWidget.cpp
++++ b/widget/xpwidgets/nsBaseWidget.cpp
+@@ -1,15 +1,17 @@
+ /* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include "mozilla/Util.h"
+ 
++#include "mozilla/layers/ImageBridgeChild.h"
++#include "mozilla/layers/ImageBridgeParent.h"
+ #include "mozilla/layers/CompositorChild.h"
+ #include "mozilla/layers/CompositorParent.h"
+ #include "nsBaseWidget.h"
+ #include "nsDeviceContext.h"
+ #include "nsCOMPtr.h"
+ #include "nsGfxCIID.h"
+ #include "nsWidgetsCID.h"
+ #include "nsServiceManagerUtils.h"
+@@ -891,16 +893,21 @@ void nsBaseWidget::CreateCompositor()
+         delete lm;
+         mCompositorChild = nsnull;
+         return;
+       }
+       lf->SetShadowManager(shadowManager);
+       lf->SetParentBackendType(LayerManager::LAYERS_OPENGL);
+       lf->SetMaxTextureSize(maxTextureSize);
+ 
++      mImageBridgeChild = new mozilla::layers::ImageBridgeChild(*new base::Thread("ImageBridgeChild"));
++      mImageBridgeParent = new mozilla::layers::ImageBridgeParent(* mCompositorThread, mCompositorParent);
++      mImageBridgeChild->ConnectAsync(mImageBridgeParent);
++      lf->SetImageBridge(mImageBridgeChild);
++
+       mLayerManager = lm;
+     } else {
+       NS_WARNING("fail to construct LayersChild");
+       delete lm;
+       mCompositorChild = nsnull;
+     }
+   }
+ }
+diff --git a/widget/xpwidgets/nsBaseWidget.h b/widget/xpwidgets/nsBaseWidget.h
+--- a/widget/xpwidgets/nsBaseWidget.h
++++ b/widget/xpwidgets/nsBaseWidget.h
+@@ -18,16 +18,18 @@
+ class nsIContent;
+ class nsAutoRollup;
+ class gfxContext;
+ 
+ namespace mozilla {
+ namespace layers {
+ class CompositorChild;
+ class CompositorParent;
++class ImageBridgeChild;
++class ImageBridgeParent;
+ }
+ }
+ 
+ namespace base {
+ class Thread;
+ }
+ 
+ /**
+@@ -283,16 +285,18 @@ protected:
+   ViewWrapper*      mViewWrapperPtr;
+   EVENT_CALLBACK    mEventCallback;
+   EVENT_CALLBACK    mViewCallback;
+   nsDeviceContext* mContext;
+   nsRefPtr<LayerManager> mLayerManager;
+   nsRefPtr<LayerManager> mBasicLayerManager;
+   nsRefPtr<CompositorChild> mCompositorChild;
+   nsRefPtr<CompositorParent> mCompositorParent;
++  mozilla::layers::ImageBridgeChild* mImageBridgeChild;
++  mozilla::layers::ImageBridgeParent* mImageBridgeParent;
+   Thread*           mCompositorThread;
+   nscolor           mBackground;
+   nscolor           mForeground;
+   nsCursor          mCursor;
+   nsWindowType      mWindowType;
+   nsBorderStyle     mBorderStyle;
+   bool              mOnDestroyCalled;
+   bool              mUseAcceleratedRendering;
