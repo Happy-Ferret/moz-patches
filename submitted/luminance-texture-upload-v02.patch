@@ -1,0 +1,29 @@
+# HG changeset patch
+# User Nicolas Silva <nsilva@mozilla.com>
+# Date 1338998098 14400
+# Node ID 6f16d96c9159428171c70dcde9147a6243a5e7b2
+# Parent  5eccb0b1ef73e16ce760394a16651c42f7555566
+[mq]: luminance-texture-upload
+
+diff --git a/gfx/gl/GLContext.cpp b/gfx/gl/GLContext.cpp
+--- a/gfx/gl/GLContext.cpp
++++ b/gfx/gl/GLContext.cpp
+@@ -2293,17 +2293,17 @@ GLContext::UploadSurfaceToTexture(gfxASu
+             NS_ASSERTION(false, "Unhandled image surface format!");
+             format = 0;
+             type = 0;
+             shader = ShaderProgramType(0);
+     }
+ 
+     PRInt32 stride = imageSurface->Stride();
+ 
+-    internalformat = mIsGLES2 ? format : LOCAL_GL_RGBA;
++    internalformat = format;
+ 
+     nsIntRegionRectIterator iter(paintRegion);
+     const nsIntRect *iterRect;
+ 
+     // Top left point of the region's bounding rectangle.
+     nsIntPoint topLeft = paintRegion.GetBounds().TopLeft();
+ 
+     while ((iterRect = iter.Next())) {

@@ -1,0 +1,227 @@
+# HG changeset patch
+# Parent 6f16d96c9159428171c70dcde9147a6243a5e7b2
+
+diff --git a/gfx/layers/Layers.cpp b/gfx/layers/Layers.cpp
+--- a/gfx/layers/Layers.cpp
++++ b/gfx/layers/Layers.cpp
+@@ -168,16 +168,23 @@ AppendToString(nsACString& s, const Fram
+ 
+ } // namespace <anon>
+ 
+ namespace mozilla {
+ namespace layers {
+ 
+ //--------------------------------------------------
+ // LayerManager
++Layer* LayerManager::GetLayerByID(LayerID aID)
++{
++  if (!GetRoot()) return nsnull;
++
++  return GetRoot()->GetLayerByID(aID);
++}
++
+ already_AddRefed<gfxASurface>
+ LayerManager::CreateOptimalSurface(const gfxIntSize &aSize,
+                                    gfxASurface::gfxImageFormat aFormat)
+ {
+   return gfxPlatform::GetPlatform()->
+     CreateOffscreenSurface(aSize, gfxASurface::ContentFromFormat(aFormat));
+ }
+ 
+@@ -200,16 +207,22 @@ already_AddRefed<ImageContainer>
+ LayerManager::CreateImageContainer()
+ {
+   nsRefPtr<ImageContainer> container = new ImageContainer();
+   return container.forget();
+ }
+ 
+ //--------------------------------------------------
+ // Layer
++LayerID Layer::sNextLayerID = 0;
++
++Layer* Layer::GetLayerByID(LayerID aID)
++{
++  return (GetID() == aID) ? this : nsnull;
++}
+ 
+ bool
+ Layer::CanUseOpaqueSurface()
+ {
+   // If the visible content in the layer is opaque, there is no need
+   // for an alpha channel.
+   if (GetContentFlags() & CONTENT_OPAQUE)
+     return true;
+@@ -365,29 +378,41 @@ Layer::GetEffectiveOpacity()
+   }
+   return opacity;
+ }
+ 
+ void
+ Layer::ComputeEffectiveTransformForMaskLayer(const gfx3DMatrix& aTransformToSurface)
+ {
+   if (mMaskLayer) {
+-    mMaskLayer->mEffectiveTransform = aTransformToSurface;
+-
+-#ifdef DEBUG
+-    gfxMatrix maskTranslation;
+-    bool maskIs2D = mMaskLayer->GetTransform().CanDraw2D(&maskTranslation);
+-    NS_ASSERTION(maskIs2D, "How did we end up with a 3D transform here?!");
+-    NS_ASSERTION(maskTranslation.HasOnlyIntegerTranslation(),
+-                 "Mask layer has invalid transform.");
+-#endif
+-    mMaskLayer->mEffectiveTransform.PreMultiply(mMaskLayer->GetTransform());
++    mMaskLayer->mEffectiveTransform = aTransformToSurface;
++
++#ifdef DEBUG
++    gfxMatrix maskTranslation;
++    bool maskIs2D = mMaskLayer->GetTransform().CanDraw2D(&maskTranslation);
++    NS_ASSERTION(maskIs2D, "How did we end up with a 3D transform here?!");
++    NS_ASSERTION(maskTranslation.HasOnlyIntegerTranslation(),
++                 "Mask layer has invalid transform.");
++#endif
++    mMaskLayer->mEffectiveTransform.PreMultiply(mMaskLayer->GetTransform());
+   }
+ }
+ 
++Layer* ContainerLayer::GetLayerByID(LayerID aID)
++{
++  if (mID == aID) return this;
++  Layer* it = GetFirstChild();
++  while (it != nsnull) {
++    Layer* res = it->GetLayerByID(aID); 
++    if (res != nsnull) return it;
++    it = it->GetNextSibling();
++  }
++  return nsnull;
++}
++
+ void
+ ContainerLayer::FillSpecificAttributes(SpecificLayerAttributes& aAttrs)
+ {
+   aAttrs = ContainerLayerAttributes(GetFrameMetrics());
+ }
+ 
+ bool
+ ContainerLayer::HasMultipleChildren()
+diff --git a/gfx/layers/Layers.h b/gfx/layers/Layers.h
+--- a/gfx/layers/Layers.h
++++ b/gfx/layers/Layers.h
+@@ -57,16 +57,17 @@ class CanvasLayer;
+ class ReadbackLayer;
+ class ReadbackProcessor;
+ class ShadowLayer;
+ class ShadowableLayer;
+ class ShadowLayerForwarder;
+ class ShadowLayerManager;
+ class SpecificLayerAttributes;
+ 
++typedef PRUint32 LayerID;
+ /**
+  * The viewport and displayport metrics for the painted frame at the
+  * time of a layer-tree transaction.  These metrics are especially
+  * useful for shadow layers, because the metrics values are updated
+  * atomically with new pixels.
+  */
+ struct THEBES_API FrameMetrics {
+ public:
+@@ -362,16 +363,18 @@ public:
+    * no root layer, EndTransaction won't draw anything.
+    */
+   virtual void SetRoot(Layer* aLayer) = 0;
+   /**
+    * Can be called anytime
+    */
+   Layer* GetRoot() { return mRoot; }
+ 
++  Layer* GetLayerByID(LayerID aID);
++
+   /**
+    * CONSTRUCTION PHASE ONLY
+    * Called when a managee has mutated.
+    * Subclasses overriding this method must first call their
+    * superclass's impl
+    */
+ #ifdef DEBUG
+   // In debug builds, we check some properties of |aLayer|.
+@@ -569,16 +572,19 @@ public:
+ 
+   /**
+    * Returns the LayerManager this Layer belongs to. Note that the layer
+    * manager might be in a destroyed state, at which point it's only
+    * valid to set/get user data from it.
+    */
+   LayerManager* Manager() { return mManager; }
+ 
++  LayerID GetID() const { return mID; }
++  virtual Layer* GetLayerByID(LayerID aID);
++
+   enum {
+     /**
+      * If this is set, the caller is promising that by the end of this
+      * transaction the entire visible region (as specified by
+      * SetVisibleRegion) will be filled with opaque content.
+      */
+     CONTENT_OPAQUE = 0x01,
+     /**
+@@ -939,19 +945,22 @@ protected:
+     mPrevSibling(nsnull),
+     mImplData(aImplData),
+     mMaskLayer(nsnull),
+     mOpacity(1.0),
+     mContentFlags(0),
+     mUseClipRect(false),
+     mUseTileSourceRect(false),
+     mIsFixedPosition(false),
+-    mDebugColorIndex(0)
++    mDebugColorIndex(0),
++    mID(GenLayerID())
+     {}
+ 
++  static LayerID GenLayerID() { return ++sNextLayerID; }
++
+   void Mutated() { mManager->Mutated(this); }
+ 
+   // Print interesting information about this into aTo.  Internally
+   // used to implement Dump*() and Log*().  If subclasses have
+   // additional interesting properties, they should override this with
+   // an implementation that first calls the base implementation then
+   // appends additional info to aTo.
+   virtual nsACString& PrintInfo(nsACString& aTo, const char* aPrefix);
+@@ -990,16 +999,18 @@ protected:
+   float mOpacity;
+   nsIntRect mClipRect;
+   nsIntRect mTileSourceRect;
+   PRUint32 mContentFlags;
+   bool mUseClipRect;
+   bool mUseTileSourceRect;
+   bool mIsFixedPosition;
+   DebugOnly<PRUint32> mDebugColorIndex;
++  LayerID mID;
++  static LayerID sNextLayerID;
+ };
+ 
+ /**
+  * A Layer which we can draw into using Thebes. It is a conceptually
+  * infinite surface, but each ThebesLayer has an associated "valid region"
+  * of contents that it is currently storing, which is finite. ThebesLayer
+  * implementations can store content between paints.
+  * 
+@@ -1143,16 +1154,18 @@ public:
+   // These getters can be used anytime.
+ 
+   virtual ContainerLayer* AsContainerLayer() { return this; }
+ 
+   virtual Layer* GetFirstChild() { return mFirstChild; }
+   virtual Layer* GetLastChild() { return mLastChild; }
+   const FrameMetrics& GetFrameMetrics() { return mFrameMetrics; }
+ 
++  virtual Layer* GetLayerByID(LayerID aID);
++
+   MOZ_LAYER_DECL_NAME("ContainerLayer", TYPE_CONTAINER)
+ 
+   /**
+    * ContainerLayer backends need to override ComputeEffectiveTransforms
+    * since the decision about whether to use a temporary surface for the
+    * container is backend-specific. ComputeEffectiveTransforms must also set
+    * mUseIntermediateSurface.
+    */
