@@ -1,19 +1,20 @@
 # HG changeset patch
-# Parent c446e0b10815102810ddc7c849b23aec16271205
+# Parent 22738e8116bb4537496cee4ff917e537bf2448f8
 Moves OptimalShmemType from ShadowLayers.cpp to SharedMemory.h
 
 diff --git a/gfx/layers/ipc/ShadowLayers.cpp b/gfx/layers/ipc/ShadowLayers.cpp
 --- a/gfx/layers/ipc/ShadowLayers.cpp
 +++ b/gfx/layers/ipc/ShadowLayers.cpp
-@@ -338,31 +338,16 @@ ShadowLayerForwarder::EndTransaction(Inf
-     }
-   }
+@@ -359,32 +359,16 @@ ShadowLayerForwarder::ShadowDrawToTarget
+   aTarget->DrawSurface(surface, surface->GetSize());
  
-   mIsFirstPaint = false;
-   MOZ_LAYERS_LOG(("[LayersForwarder] ... done"));
+   surface = nsnull;
+   DestroySharedSurface(&descriptorOut);
+ 
    return true;
  }
  
+-
 -static SharedMemory::SharedMemoryType
 -OptimalShmemType()
 -{

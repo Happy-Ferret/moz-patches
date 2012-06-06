@@ -1,16 +1,16 @@
 # HG changeset patch
-# Parent 7c3cd4824f94609d4ad714bea9c687227c641e63
+# Parent 7c55987b931ba70a262ea8725b994d56e67501eb
 Disable xrender by default
 
 diff --git a/modules/libpref/src/init/all.js b/modules/libpref/src/init/all.js
 --- a/modules/libpref/src/init/all.js
 +++ b/modules/libpref/src/init/all.js
-@@ -3440,17 +3440,17 @@ pref("layers.acceleration.draw-fps", fal
- // call to XOpenDisplay which is hard to change due to interdependencies 
- // in the initialization (see bug 722012 for more details).
- #ifndef MOZ_X11
- pref("layers.offmainthreadcomposition.enabled", false);
- #endif
+@@ -3448,17 +3448,17 @@ pref("layers.acceleration.disabled", fal
+ 
+ // Whether to force acceleration on, ignoring blacklists.
+ pref("layers.acceleration.force-enabled", false);
+ 
+ pref("layers.acceleration.draw-fps", false);
  
  #ifdef MOZ_X11
  #ifdef MOZ_WIDGET_GTK2

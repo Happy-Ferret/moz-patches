@@ -2,6 +2,8 @@ panels-acceleration
 xrender-disabled
 optimal-img-format
 optimal-shmem
+luminance-texture-upload
+layers-id-api
 PImageBridge
 videoBridge
 videoBridge-child

@@ -1,5 +1,5 @@
 # HG changeset patch
-# Parent b48dde6bb4393042981de8c582aa73a4bc8be33a
+# Parent 44250757ca247057b64d81cd9fccd855b30fced3
 
 diff --git a/content/media/VideoFrameContainer.cpp b/content/media/VideoFrameContainer.cpp
 --- a/content/media/VideoFrameContainer.cpp
@@ -25,29 +25,6 @@ diff --git a/content/media/VideoFrameContainer.cpp b/content/media/VideoFrameCon
    mPaintTarget = aTargetTime;
  }
  
-diff --git a/gfx/gl/GLContext.cpp b/gfx/gl/GLContext.cpp
---- a/gfx/gl/GLContext.cpp
-+++ b/gfx/gl/GLContext.cpp
-@@ -2293,17 +2293,18 @@ GLContext::UploadSurfaceToTexture(gfxASu
-             NS_ASSERTION(false, "Unhandled image surface format!");
-             format = 0;
-             type = 0;
-             shader = ShaderProgramType(0);
-     }
- 
-     PRInt32 stride = imageSurface->Stride();
- 
--    internalformat = mIsGLES2 ? format : LOCAL_GL_RGBA;
-+    //internalformat = mIsGLES2 ? format : LOCAL_GL_RGBA;
-+    internalformat = true ? format : LOCAL_GL_RGBA;
- 
-     nsIntRegionRectIterator iter(paintRegion);
-     const nsIntRect *iterRect;
- 
-     // Top left point of the region's bounding rectangle.
-     nsIntPoint topLeft = paintRegion.GetBounds().TopLeft();
- 
-     while ((iterRect = iter.Next())) {
 diff --git a/gfx/layers/ImageLayers.cpp b/gfx/layers/ImageLayers.cpp
 --- a/gfx/layers/ImageLayers.cpp
 +++ b/gfx/layers/ImageLayers.cpp
@@ -1157,7 +1134,7 @@ diff --git a/gfx/layers/ipc/ShadowLayers.h b/gfx/layers/ipc/ShadowLayers.h
   *  - a parent process can paint a child process's layer tree while
   *    the child process is blocked, say on content script.  This is
   *    important on mobile devices where UI responsiveness is key.
-@@ -295,16 +299,19 @@ public:
+@@ -300,16 +304,19 @@ public:
    /**
     * Flag the next paint as the first for a document.
     */
@@ -1177,7 +1154,7 @@ diff --git a/gfx/layers/ipc/ShadowLayers.h b/gfx/layers/ipc/ShadowLayers.h
  private:
    bool PlatformAllocDoubleBuffer(const gfxIntSize& aSize,
                                     gfxASurface::gfxContentType aContent,
-@@ -322,16 +329,18 @@ private:
+@@ -327,16 +334,18 @@ private:
  
    static void PlatformSyncBeforeUpdate();
  
@@ -1196,7 +1173,7 @@ diff --git a/gfx/layers/ipc/ShadowLayers.h b/gfx/layers/ipc/ShadowLayers.h
  public:
    virtual ~ShadowLayerManager() {}
  
-@@ -560,36 +569,60 @@ public:
+@@ -565,36 +574,60 @@ public:
    MOZ_LAYER_DECL_NAME("ShadowCanvasLayer", TYPE_SHADOW)
  
  protected:
@@ -1444,7 +1421,7 @@ diff --git a/gfx/layers/opengl/ImageLayerOGL.h b/gfx/layers/opengl/ImageLayerOGL
 diff --git a/gfx/layers/opengl/LayerManagerOGL.cpp b/gfx/layers/opengl/LayerManagerOGL.cpp
 --- a/gfx/layers/opengl/LayerManagerOGL.cpp
 +++ b/gfx/layers/opengl/LayerManagerOGL.cpp
-@@ -699,16 +699,17 @@ LayerManagerOGL::BindAndDrawQuadWithText
+@@ -704,16 +704,17 @@ LayerManagerOGL::BindAndDrawQuadWithText
      }
      mGLContext->fDisableVertexAttribArray(texCoordAttribIndex);
    }
@@ -1547,23 +1524,23 @@ diff --git a/widget/xpwidgets/nsBaseWidget.cpp b/widget/xpwidgets/nsBaseWidget.c
  #include "nsGfxCIID.h"
  #include "nsWidgetsCID.h"
  #include "nsServiceManagerUtils.h"
-@@ -891,16 +893,21 @@ void nsBaseWidget::CreateCompositor()
-         delete lm;
-         mCompositorChild = nsnull;
-         return;
-       }
+@@ -899,16 +901,21 @@ void nsBaseWidget::CreateCompositor()
        lf->SetShadowManager(shadowManager);
-       lf->SetParentBackendType(LayerManager::LAYERS_OPENGL);
+       if (mUseAcceleratedRendering)
+         lf->SetParentBackendType(LayerManager::LAYERS_OPENGL);
+       else
+         lf->SetParentBackendType(LayerManager::LAYERS_BASIC);
        lf->SetMaxTextureSize(maxTextureSize);
  
+       mLayerManager = lm;
++
 +      mImageBridgeChild = new mozilla::layers::ImageBridgeChild(*new base::Thread("ImageBridgeChild"));
 +      mImageBridgeParent = new mozilla::layers::ImageBridgeParent(* mCompositorThread, mCompositorParent);
 +      mImageBridgeChild->ConnectAsync(mImageBridgeParent);
 +      lf->SetImageBridge(mImageBridgeChild);
-+
-       mLayerManager = lm;
      } else {
-       NS_WARNING("fail to construct LayersChild");
+       // We don't currently want to support not having a LayersChild
+       NS_RUNTIMEABORT("failed to construct LayersChild");
        delete lm;
        mCompositorChild = nsnull;
      }
