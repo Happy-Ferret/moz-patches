@@ -1,0 +1,115 @@
+# HG changeset patch
+# Parent 5bc78040adf792942f17b8c2449e2ce3890ac8f8
+
+diff --git a/widget/gtk2/nsWindow.cpp b/widget/gtk2/nsWindow.cpp
+--- a/widget/gtk2/nsWindow.cpp
++++ b/widget/gtk2/nsWindow.cpp
+@@ -2090,16 +2090,17 @@ nsWindow::OnExposeEvent(cairo_t *cr)
+         // If the window has been destroyed during WILL_PAINT, there is
+         // nothing left to do.
+         if (!mGdkWindow)
+             return TRUE;
+     }
+ 
+     nsPaintEvent event(true, NS_PAINT, this);
+     event.willSendDidPaint = true;
++    DEBUG_SET_EVENT_ORIGIN(event);
+ 
+ #if defined(MOZ_WIDGET_GTK2)
+     GdkRectangle *rects;
+     gint nrects;
+     gdk_region_get_rectangles(aEvent->region, &rects, &nrects);
+     if (NS_UNLIKELY(!rects)) // OOM
+         return FALSE;
+ #else
+diff --git a/widget/nsGUIEvent.h b/widget/nsGUIEvent.h
+--- a/widget/nsGUIEvent.h
++++ b/widget/nsGUIEvent.h
+@@ -574,48 +574,65 @@ class nsHashKey;
+  * different types of (top-level) window z-level positioning
+  */
+ enum nsWindowZ {
+   nsWindowZTop = 0,   // on top
+   nsWindowZBottom,    // on bottom
+   nsWindowZRelative   // just below some specified widget
+ };
+ 
++#ifdef DEBUG
++#define _STRINGIFY(x) #x
++#define _TOSTRING(x) _STRINGIFY(x)
++#define DEBUG_SET_EVENT_ORIGIN(evt) (evt).origin = __FILE__ ":" _TOSTRING(__LINE__);
++#else
++#define DEBUG_SET_EVENT_ORIGIN(evt)   
++#endif
+ /**
+  * General event
+  */
+ 
+ class nsEvent
+ {
+ protected:
+   nsEvent(bool isTrusted, PRUint32 msg, PRUint8 structType)
+     : eventStructType(structType),
+       message(msg),
+       refPoint(0, 0),
+       lastRefPoint(0, 0),
+       time(0),
+       flags(isTrusted ? NS_EVENT_FLAG_TRUSTED : NS_EVENT_FLAG_NONE),
+       userType(0)
++#ifdef DEBUG
++      , origin("not set")
++#endif
+   {
+     MOZ_COUNT_CTOR(nsEvent);
+   }
+ 
+   nsEvent()
+   {
++#ifdef DEBUG
++    origin = "not set";
++#endif
+   }
+ 
+ public:
+   nsEvent(bool isTrusted, PRUint32 msg)
+     : eventStructType(NS_EVENT),
+       message(msg),
+       refPoint(0, 0),
+       lastRefPoint(0, 0),
+       time(0),
+       flags(isTrusted ? NS_EVENT_FLAG_TRUSTED : NS_EVENT_FLAG_NONE),
+       userType(0)
++#ifdef DEBUG
++      , origin("not set")
++#endif
++
+   {
+     MOZ_COUNT_CTOR(nsEvent);
+   }
+ 
+   ~nsEvent()
+   {
+     MOZ_COUNT_DTOR(nsEvent);
+   }
+@@ -636,18 +653,20 @@ public:
+   // status. This is used also to indicate whether the event is trusted.
+   PRUint32    flags;
+   // Additional type info for user defined events
+   nsCOMPtr<nsIAtom>     userType;
+   // Event targets, needed by DOM Events
+   nsCOMPtr<nsIDOMEventTarget> target;
+   nsCOMPtr<nsIDOMEventTarget> currentTarget;
+   nsCOMPtr<nsIDOMEventTarget> originalTarget;
++#ifdef DEBUG
++  const char * origin;
++#endif
+ };
+-
+ /**
+  * General graphic user interface event
+  */
+ 
+ class nsGUIEvent : public nsEvent
+ {
+ protected:
+   nsGUIEvent(bool isTrusted, PRUint32 msg, nsIWidget *w, PRUint8 structType)
