@@ -37,7 +37,7 @@ diff --git a/gfx/layers/ImageLayers.cpp b/gfx/layers/ImageLayers.cpp
  #include "gfxImageSurface.h"
 +#include "gfxSharedImageSurface.h"
  #include "yuv_convert.h"
-+#include "mozilla/layers/ImageBridgeChild.h"
++#include "mozilla/layers/ImageContainerChild.h"
  
  #ifdef XP_MACOSX
  #include "nsCoreAnimationSupport.h"
@@ -46,7 +46,7 @@ diff --git a/gfx/layers/ImageLayers.cpp b/gfx/layers/ImageLayers.cpp
  #ifdef XP_WIN
  #include "gfxD2DSurface.h"
  #include "gfxWindowsPlatform.h"
-@@ -106,16 +108,31 @@ ImageContainer::SetCurrentImage(Image *a
+@@ -106,16 +108,24 @@ ImageContainer::SetCurrentImage(Image *a
    mActiveImage = aImage;
    CurrentImageChanged();
  
@@ -58,16 +58,9 @@ diff --git a/gfx/layers/ImageLayers.cpp b/gfx/layers/ImageLayers.cpp
 +void
 +ImageContainer::SetCurrentImageAsync(Image * aImage)
 +{
-+  if (!mImageBridgeChild) return;
++  if (!mImageContainerChild) return;
 +  mActiveImage = aImage;
-+  mImageBridgeChild->SendImageAsync(GetLayerID(), this);  
-+}
-+
-+void ImageContainer::AddSharedImageToPool(SharedImage& aImage)
-+{
-+  // TODO: check that the size of the image corresponds and
-+  // discard/delete it if not.
-+  mSharedImagePool.Push(&aImage);
++  mImageContainerChild->SendImageAsync(aImage);  
 +}
 +
  bool
@@ -81,26 +74,7 @@ diff --git a/gfx/layers/ImageLayers.cpp b/gfx/layers/ImageLayers.cpp
 diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
 --- a/gfx/layers/ImageLayers.h
 +++ b/gfx/layers/ImageLayers.h
-@@ -11,16 +11,18 @@
- #include "nsISupportsImpl.h"
- #include "gfxPattern.h"
- #include "nsThreadUtils.h"
- #include "mozilla/ReentrantMonitor.h"
- #include "mozilla/TimeStamp.h"
- #include "mozilla/mozalloc.h"
- #include "mozilla/Mutex.h"
- #include "gfxPlatform.h"
-+#include "mozilla/LinkedList.h"
-+#include "nsDeque.h"
- 
- #ifdef XP_MACOSX
- #include "nsIOSurface.h"
- #endif
- #ifdef XP_WIN
- struct ID3D10Texture2D;
- struct ID3D10Device;
- struct ID3D10ShaderResourceView;
-@@ -32,16 +34,20 @@ namespace mozilla {
+@@ -32,16 +32,20 @@ namespace mozilla {
  
  class CrossProcessMutex;
  namespace ipc {
@@ -109,7 +83,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
  
  namespace layers {
  
-+class ImageBridgeChild;
++class ImageContainerChild;
 +class SharedImage;
 +class MediaSharedImage;
 +
@@ -121,7 +95,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
    STEREO_MODE_TOP_BOTTOM
  };
  
-@@ -278,29 +284,32 @@ struct RemoteImageData {
+@@ -278,29 +282,30 @@ struct RemoteImageData {
  
  /**
   * A class that manages Images for an ImageLayer. The only reason
@@ -131,11 +105,10 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
   * video playback without involving the main thread, for example.
   */
 -class THEBES_API ImageContainer {
-+class THEBES_API ImageContainer : public LinkedListElement<ImageContainer> 
++class THEBES_API ImageContainer 
 +{
    NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ImageContainer)
 -
-+  friend class mozilla::layers::ImageBridgeChild;
  public:
    ImageContainer() :
      mReentrantMonitor("ImageContainer.mReentrantMonitor"),
@@ -147,8 +120,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
      mRemoteDataMutex(nsnull),
 -    mCompositionNotifySink(nsnull)
 +    mCompositionNotifySink(nsnull),
-+    mImageBridgeChild(nsnull),
-+    mLayerID(0)
++    mImageContainerChild(nsnull)
    {}
  
    ~ImageContainer();
@@ -157,7 +129,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
     * Create an Image in one of the given formats.
     * Picks the "best" format from the list and creates an Image of that
     * format.
-@@ -321,16 +330,26 @@ public:
+@@ -321,16 +326,26 @@ public:
     * The Image data must not be modified after this method is called!
     *
     * Implementations must call CurrentImageChanged() while holding
@@ -184,8 +156,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
  
    /**
     * Lock the current Image.
-@@ -468,17 +487,42 @@ public:
-    */
+@@ -469,16 +484,30 @@ public:
    void SetRemoteImageData(RemoteImageData *aRemoteData,
                            CrossProcessMutex *aRemoteDataMutex);
    /**
@@ -193,29 +164,18 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
     */
    RemoteImageData *GetRemoteImageData() { return mRemoteData; }
  
-+  // TODO: make them protected and find an elegant way to set the LayerID
-+  LayerID GetLayerID() const { return mLayerID; }
-+  void SetLayerID(LayerID aLayerID)
-+  { 
-+    mLayerID = aLayerID;
-+  }
-+
  protected:
 +
 +  // -------------- Async Image transfer
-+  // The following methods are called internally by
-+  // ImageContainer and/or ImageBridgeChild
-+
-+  ImageBridgeChild * GetImageBridge() const 
++  
++  ImageContainerChild * GetImageContainerChild() const 
 +  {
-+    return mImageBridgeChild;
++    return mImageContainerChild;
 +  }
-+  void SetImageBridge(ImageBridgeChild * aBridge)
++  void SetImageContainerChild(ImageContainerChild * aChild)
 +  {
-+    mImageBridgeChild = aBridge;
++    mImageContainerChild = aChild;
 +  }
-+
-+  void AddSharedImageToPool(SharedImage& aImage);
 +
 +  // --------------
 +
@@ -227,7 +187,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
    // calling this function!
    void EnsureActiveImage();
  
-@@ -524,16 +568,21 @@ protected:
+@@ -524,16 +553,19 @@ protected:
    RemoteImageData *mRemoteData;
  
    // This cross-process mutex is used to synchronise access to mRemoteData.
@@ -238,9 +198,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
    CompositionNotifySink *mCompositionNotifySink;
 +
 +  // ImageBridgeProtocol
-+  ImageBridgeChild * mImageBridgeChild;
-+  LayerID mLayerID;
-+  nsDeque mSharedImagePool;
++  ImageContainerChild * mImageContainerChild;
  };
   
  class AutoLockImage
@@ -252,7 +210,7 @@ diff --git a/gfx/layers/ImageLayers.h b/gfx/layers/ImageLayers.h
 diff --git a/gfx/layers/Makefile.in b/gfx/layers/Makefile.in
 --- a/gfx/layers/Makefile.in
 +++ b/gfx/layers/Makefile.in
-@@ -105,27 +105,31 @@ EXPORTS_mozilla/layers =\
+@@ -105,27 +105,35 @@ EXPORTS_mozilla/layers =\
          CompositorCocoaWidgetHelper.h \
          CompositorChild.h \
          CompositorParent.h \
@@ -263,6 +221,8 @@ diff --git a/gfx/layers/Makefile.in b/gfx/layers/Makefile.in
          RenderTrace.h \
 +        ImageBridgeChild.h \
 +        ImageBridgeParent.h \
++        ImageContainerChild.h \
++        ImageContainerParent.h \
          $(NULL)
  
  CPPSRCS += \
@@ -276,6 +236,8 @@ diff --git a/gfx/layers/Makefile.in b/gfx/layers/Makefile.in
          ShadowLayersParent.cpp \
 +        ImageBridgeChild.cpp \
 +        ImageBridgeParent.cpp \
++        ImageContainerChild.cpp \
++        ImageContainerParent.cpp \
          $(NULL)
  
  ifdef MOZ_X11 #{
@@ -422,31 +384,23 @@ diff --git a/gfx/layers/ipc/ImageBridgeChild.cpp b/gfx/layers/ipc/ImageBridgeChi
 new file mode 100644
 --- /dev/null
 +++ b/gfx/layers/ipc/ImageBridgeChild.cpp
-@@ -0,0 +1,313 @@
+@@ -0,0 +1,88 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +#include "ImageBridgeChild.h"
++#include "ImageContainerChild.h"
 +#include "ImageBridgeParent.h"
 +#include "gfxSharedImageSurface.h"
 +#include "ImageLayers.h"
 +#include "base/thread.h"
 +
-+// temporary: kinda nice for me while the patch is not 
-+// finished, will be removed
-+#ifdef __GNUG__
-+#define NOT_IMPLEMENTED printf("\033[1;34m %s is not implemented!\033[0m\n", __PRETTY_FUNCTION__);
-+#else
-+#define NOT_IMPLEMENTED   
-+#endif
 +
 +namespace mozilla {
 +namespace layers {
 +
-+static int _debug_sharedAllocCount = 0;
-+static int _fake_layerID = 0;
 +
 +ImageBridgeChild::ImageBridgeChild(base::Thread& aThread)
 +{
@@ -458,79 +412,333 @@ new file mode 100644
 +
 +ImageBridgeChild::~ImageBridgeChild()
 +{
-+  RemoveAllImageContainers();
 +}
 +
 +
 +// IPDL protocol
 +
 +
-+bool ImageBridgeChild::RecvReleasedSharedImage(const LayerID& aLayerID, 
-+                                               const ImageBridgeChild::SharedImage& aImage)
++PImageContainerChild* ImageBridgeChild::AllocPImageContainer(const PRUint64& handle)
 +{
-+  printf("\033[1;34m -- ImageBridgeChild: received an image (layerID: %i) \033[0m\n", aLayerID);
-+  DestroySharedImage((MediaSharedImage&)aImage);
++  return new ImageContainerChild(this, handle);
++}
++
++bool ImageBridgeChild::DeallocPImageContainer(PImageContainerChild* aImgContainerChild)
++{
++  delete aImgContainerChild;
 +  return true;
 +}
 +
-+bool ImageBridgeChild::AllocSharedImage(const gfxIntSize& aSize,
-+                                        gfxASurface::gfxContentType aContent,
-+                                        ImageBridgeChild::SharedImage& aImage)
-+{
-+  // TODO
-+  NOT_IMPLEMENTED
-+  return false;
-+}
 +
-+void ImageBridgeChild::DestroySharedImage(ImageBridgeChild::SharedImage& aImage)
-+{
-+  _debug_sharedAllocCount--;
-+  printf("after deallocation: count is %i\n", _debug_sharedAllocCount);
-+  
-+  if (aImage.type() == MediaSharedImage::TMediaYUVImage) {
-+    printf("\n\ndeallocate YUV shmems\n\n");
-+    DeallocShmem(aImage.get_MediaYUVImage().Ydata());
-+    DeallocShmem(aImage.get_MediaYUVImage().Udata());
-+    DeallocShmem(aImage.get_MediaYUVImage().Vdata());
-+  } else if (aImage.type() == MediaSharedImage::TMediaSurfaceDescriptor) {
-+    printf("\ndeallocate SurfaceDescriptor shmem\n\n");
-+    DeallocShmem(aImage.get_MediaSurfaceDescriptor().get_Shmem());
-+  }
-+
-+}
 +
 +bool ImageBridgeChild::InImageBridgeChildThread() const {
 +  return mThread->thread_id() == PlatformThread::CurrentId();
 +}
 +
-+void ImageBridgeChild::AddImageContainer(ImageContainer& aImageContainer)
-+{
-+  NS_ASSERTION(InImageBridgeChildThread(),"Should be in ImageBridgeChild thread!");
-+  if (aImageContainer.GetImageBridge() == this) return;
 +
-+  mImageContainers.insertBack(&aImageContainer);
-+  aImageContainer.SetImageBridge(this);
-+}
 +
-+void ImageBridgeChild::RemoveImageContainer(ImageContainer& aImageContainer)
-+{
-+  NS_ASSERTION(InImageBridgeChildThread(),"Shoudl be in ImageBridgeChild thread!");
-+  aImageContainer.remove();
-+  aImageContainer.SetImageBridge(nsnull);
-+}
 +
-+void ImageBridgeChild::RemoveAllImageContainers()
++
++// async opertations:
++
++class ImageBridgeConnectionTask : public Task
 +{
-+  NS_ASSERTION(InImageBridgeChildThread(),"Shoudl be in ImageBridgeChild thread!");
-+  ImageContainer * it = mImageContainers.getFirst();
-+  while (it != nsnull) {
-+    RemoveImageContainer(*it);
-+    it = it->getNext();
++public:
++ImageBridgeConnectionTask(ImageBridgeChild * child, ImageBridgeParent * parent)
++  : mChild(child), mParent(parent) {}
++
++  void Run()
++  {
++    mChild->ConnectNow(mParent);
 +  }
++private:
++  ImageBridgeChild * mChild;
++  ImageBridgeParent * mParent;
++};
++
++
++void ImageBridgeChild::ConnectNow(ImageBridgeParent* aParent)
++{
++    MessageLoop * parentMsgLoop = aParent->GetMessageLoop();
++    ipc::AsyncChannel * parentChannel = aParent->GetIPCChannel();
++    this->Open(parentChannel, parentMsgLoop, mozilla::ipc::AsyncChannel::Child);
++}
++
++void ImageBridgeChild::ConnectAsync(ImageBridgeParent* aParent)
++{
++  Task * t = new ImageBridgeConnectionTask(this, aParent);
++  GetThread()->message_loop()->PostTask(FROM_HERE, t);
 +}
 +
 +
-+bool ImageBridgeChild::AllocBuffer(const gfxIntSize& aSize,
++} // layers
++} // mozilla
+\ No newline at end of file
+diff --git a/gfx/layers/ipc/ImageBridgeChild.h b/gfx/layers/ipc/ImageBridgeChild.h
+new file mode 100644
+--- /dev/null
++++ b/gfx/layers/ipc/ImageBridgeChild.h
+@@ -0,0 +1,84 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef MOZILLA_GFX_IMAGEBRIDGECHILD_H
++#define MOZILLA_GFX_IMAGEBRIDGECHILD_H
++
++#include "mozilla/layers/PImageBridgeChild.h"
++
++class gfxSharedImageSurface;
++
++namespace base {
++class Thread;
++}
++
++namespace mozilla {
++namespace layers {
++
++class ImageBridgeParent;
++class ImageBridgeConnectionTask;
++class MediaSharedImage;
++class Image;
++
++class ImageBridgeChild : public PImageBridgeChild
++{
++// NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VideoBridgeChild)
++friend class mozilla::layers::ImageBridgeConnectionTask;
++
++public:
++
++  ImageBridgeChild(base::Thread& aThread);
++  ~ImageBridgeChild();
++
++  // IPDL protocol
++
++  // Temporary, not suitable for cross-process layers
++  // can be called from any thread
++  void ConnectAsync(ImageBridgeParent* aParent);
++    
++  /**
++   * Returns the ImageBrdugeChild's thread.
++   *
++   * Can be called from any thread.
++   */
++  base::Thread * GetThread() const
++  {
++    return mThread;
++  }
++
++  MessageLoop * GetMessageLoop() const;
++
++  /**
++   * Returns true if the current thread is the ImageBrdugeChild's thread.
++   *
++   * Can be called from any thread.
++   */
++  bool InImageBridgeChildThread() const;
++
++  PImageContainerChild* AllocPImageContainer(const PRUint64&);
++  bool DeallocPImageContainer(PImageContainerChild* aImgContainerChild);
++
++protected:
++
++  /** 
++   * must be called in the ImageBridgeChild thread.
++   */
++  void ConnectNow(ImageBridgeParent* aParent);
++  /**
++   * Dispatch a task in the ImageBridgeChild thread to send an 
++   * image through IPC to the compositor.
++   *
++   * Can be called from any thread.
++   */
++
++private:
++  base::Thread * mThread;
++};
++
++} // layers
++} // mozilla
++
++
++#endif
+\ No newline at end of file
+diff --git a/gfx/layers/ipc/ImageBridgeParent.cpp b/gfx/layers/ipc/ImageBridgeParent.cpp
+new file mode 100644
+--- /dev/null
++++ b/gfx/layers/ipc/ImageBridgeParent.cpp
+@@ -0,0 +1,82 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/layers/ImageBridgeParent.h"
++#include "mozilla/layers/ImageContainerParent.h"
++#include "mozilla/layers/CompositorParent.h"
++
++#include "base/thread.h"
++
++namespace mozilla {
++namespace layers {
++
++/*
++bool ImageBridgeParent::RecvPushSharedImage(const LayerID& aLayerID, 
++                                            const MediaSharedImage& aImage)
++{
++  printf("ImageBridgeParent::RecvPushSharedImage (layerID: %i)\n", aLayerID);
++  
++  Layer * targetLayer = mCompositorParent->GetLayerManager()->GetLayerByID(aLayerID);
++  if (targetLayer) {
++
++      ShadowImageLayer * asShadowLayer = static_cast<ShadowImageLayer*>(targetLayer);
++
++      asShadowLayer->SetImageBridgeParent(this);
++      asShadowLayer->_hacked_Swap(aImage);
++      mCompositorParent->ScheduleComposition();
++
++  } else { printf("XXXXXX layer %i not found!\n", (int)aLayerID); }
++
++  SendReleasedSharedImage(aLayerID,aImage);
++  return true;
++}
++*/
++
++ImageBridgeParent::ImageBridgeParent(CompositorParent* aCompositor)
++: mCompositorParent(aCompositor)
++{
++
++}
++
++ImageBridgeParent::~ImageBridgeParent()
++{
++}
++
++
++PImageContainerParent* ImageBridgeParent::AllocPImageContainer(const PRUint64& aHandle)
++{
++  return new ImageContainerParent(this, aHandle);
++}
++
++bool ImageBridgeParent::DeallocPImageContainer(PImageContainerParent* toDealloc)
++{
++  delete toDealloc;
++  return true;
++}
++
++
++
++void ImageBridgeParent::ScheduleComposition()
++{
++  mCompositorParent->ScheduleComposition();
++}
++
++// IPDL protocol
++
++MessageLoop * ImageBridgeParent::GetMessageLoop() {
++  return mCompositorParent->CompositorLoop();
++}
++
++
++bool ImageBridgeParent::RecvWillStop()
++{
++  // TODO
++  return false;
++}
++
++
++
++} // layers
++} // mozilla
+\ No newline at end of file
+diff --git a/gfx/layers/ipc/ImageBridgeParent.h b/gfx/layers/ipc/ImageBridgeParent.h
+new file mode 100644
+--- /dev/null
++++ b/gfx/layers/ipc/ImageBridgeParent.h
+@@ -0,0 +1,49 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/layers/PImageBridgeParent.h"
++#include "ShadowLayers.h"
++
++
++namespace base {
++class Thread;
++}
++
++namespace mozilla {
++namespace layers {
++
++class ImageBridgeChild;
++class CompositorParent;
++
++class ImageBridgeParent : public PImageBridgeParent
++{
++// NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VideoBridgeChild)
++public:
++  typedef PRInt32 CompositorID_t;
++  typedef MediaSharedImage SharedImage;
++  // IPDL protocol
++
++  ImageBridgeParent(CompositorParent* aCompositor);
++  ~ImageBridgeParent();
++
++  void ScheduleComposition();
++
++  bool RecvWillStop();
++
++  // TODO replace PRUint 64 by a proper ImageHandle
++
++  PImageContainerParent* AllocPImageContainer(const PRUint64& aHandle);
++  bool DeallocPImageContainer(PImageContainerParent* toDealloc);
++
++  MessageLoop * GetMessageLoop();
++  
++private:
++
++  // TODO: a list of ShadowImageLayers here
++  CompositorParent * mCompositorParent;
++};
++
++} // layers
++} // mozilla
+\ No newline at end of file
+diff --git a/gfx/layers/ipc/ImageContainerChild.cpp b/gfx/layers/ipc/ImageContainerChild.cpp
+new file mode 100644
+--- /dev/null
++++ b/gfx/layers/ipc/ImageContainerChild.cpp
+@@ -0,0 +1,141 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++
++#include "ImageContainerChild.h"
++#include "gfxPlatform.h"
++#include "gfxSharedImageSurface.h"
++
++namespace mozilla {
++namespace layers {
++
++// TODO debug
++static int _debug_sharedAllocCount = 0;
++static int _fake_layerID = 0;
++
++
++
++bool RecvReleasedSharedImage(const MediaSharedImage& aImage)
++{
++  // TODO
++  return false;
++}
++
++
++bool ImageContainerChild::AllocBuffer(const gfxIntSize& aSize,
 +                                   gfxASurface::gfxContentType aContent,
 +                                   gfxSharedImageSurface** aBuffer)
 +{
@@ -547,7 +755,24 @@ new file mode 100644
 +  return true;
 +}
 +
-+ImageBridgeChild::SharedImage* ImageBridgeChild::CopyImageIntoSharedImage(Image* image)
++void ImageContainerChild::DestroySharedImage(MediaSharedImage& aImage)
++{
++  _debug_sharedAllocCount--;
++  printf("after deallocation: count is %i\n", _debug_sharedAllocCount);
++  
++  if (aImage.type() == MediaSharedImage::TMediaYUVImage) {
++    printf("\n\ndeallocate YUV shmems\n\n");
++    DeallocShmem(aImage.get_MediaYUVImage().Ydata());
++    DeallocShmem(aImage.get_MediaYUVImage().Udata());
++    DeallocShmem(aImage.get_MediaYUVImage().Vdata());
++  } else if (aImage.type() == MediaSharedImage::TMediaSurfaceDescriptor) {
++    printf("\ndeallocate SurfaceDescriptor shmem\n\n");
++    DeallocShmem(aImage.get_MediaSurfaceDescriptor().get_Shmem());
++  }
++
++}
++
++MediaSharedImage* ImageContainerChild::CopyImageIntoSharedImage(Image* image)
 +{
 +  printf("before allocation: count is %i\n", _debug_sharedAllocCount);
 +  _debug_sharedAllocCount++;
@@ -592,8 +817,8 @@ new file mode 100644
 +             data->mCbCrSize.width);
 +    }
 +
-+    return new ImageBridgeChild::SharedImage( 
-+              *(new ImageBridgeChild::YUVImage(tempBufferY->GetShmem(),
++    return new MediaSharedImage( 
++              *(new MediaYUVImage(tempBufferY->GetShmem(),
 +                                             tempBufferU->GetShmem(),
 +                                             tempBufferV->GetShmem(),
 +                                             data->GetPictureRect())));
@@ -605,384 +830,235 @@ new file mode 100644
 +
 +
 +
-+// async opertations:
-+
-+class ImageBridgeConnectionTask : public Task
-+{
-+public:
-+ImageBridgeConnectionTask(ImageBridgeChild * child, ImageBridgeParent * parent)
-+  : mChild(child), mParent(parent) {}
-+
-+  void Run()
-+  {
-+    mChild->ConnectNow(mParent);
-+  }
-+private:
-+  ImageBridgeChild * mChild;
-+  ImageBridgeParent * mParent;
-+};
-+/*
-+class ImageBridgeSendTask : public Task
-+{
-+public:
-+  ImageBridgeSendTask(ImageBridgeChild * child, 
-+                      PRInt32 aLayerID,
-+                      ImageBridgeChild::SharedImage * aImage)
-+  : mChild(child), mImage(aImage), mLayerID(aLayerID) {}
-+
-+  void Run()
-+  {
-+    mChild->SendPushSharedImage(mLayerID, *mImage);
-+  }
-+private:
-+  ImageBridgeChild * mChild;
-+  ImageBridgeChild::SharedImage * mImage;
-+  PRInt32 mLayerID;
-+};
-+*/
 +class ImageBridgeCopyAndSendTask : public Task
 +{
 +public:
-+  ImageBridgeCopyAndSendTask(ImageBridgeChild * child, 
-+                             PRInt32 aLayerID,
++  ImageBridgeCopyAndSendTask(ImageContainerChild * child, 
 +                             Image * aImage)
-+  : mChild(child), mImage(aImage), mLayerID(aLayerID) {}
++  : mChild(child), mImage(aImage) {}
 +
 +  void Run()
 +  {
 +    _fake_layerID++;
-+    printf("ImageBridgeCopyAndSendTask ID:%i\n",_fake_layerID);
-+    ImageBridgeChild::SharedImage* img = 
++    printf("ImageBridgeCopyAndSendTask %i\n",_fake_layerID);
++    MediaSharedImage* img = 
 +        mChild->CopyImageIntoSharedImage(mImage);
-+    mChild->SendPushSharedImage(mLayerID, *img);
++    mChild->SendPushSharedImage(*img);
 +  }
 +private:
-+  ImageBridgeChild * mChild;
++  ImageContainerChild * mChild;
 +  Image * mImage;
-+  PRInt32 mLayerID;
 +};
 +
-+enum {CONTAINER_ADD, CONTAINER_REMOVE, CONTAINER_REMOVE_ALL};
 +
-+class ImageBridgeContainerTask : public Task
-+{
-+public:
-+  ImageBridgeContainerTask(ImageBridgeChild * child, 
-+                           ImageContainer * aContainer,
-+                           int aOperation)
-+  : mChild(child), mContainer(aContainer), mOperation(aOperation) {}
-+
-+  void Run()
-+  {
-+    if (mOperation == CONTAINER_ADD)
-+      mChild->AddImageContainer(*mContainer);
-+    else if (mOperation == CONTAINER_REMOVE)
-+      mChild->RemoveImageContainer(*mContainer);
-+    else if (mOperation == CONTAINER_REMOVE_ALL)
-+      mChild->RemoveAllImageContainers();
-+  }
-+private:
-+  ImageBridgeChild * mChild;
-+  nsRefPtr<ImageContainer> mContainer;
-+  int mOperation;
-+};
-+
-+void ImageBridgeChild::ConnectNow(ImageBridgeParent* aParent)
-+{
-+    MessageLoop * parentMsgLoop = aParent->GetMessageLoop();
-+    ipc::AsyncChannel * parentChannel = aParent->GetIPCChannel();
-+    this->Open(parentChannel, parentMsgLoop, mozilla::ipc::AsyncChannel::Child);
-+}
-+
-+void ImageBridgeChild::ConnectAsync(ImageBridgeParent* aParent)
-+{
-+  Task * t = new ImageBridgeConnectionTask(this, aParent);
-+  GetThread()->message_loop()->PostTask(FROM_HERE, t);
-+}
-+
-+void ImageBridgeChild::SendImageAsync(LayerID aLayerID,
-+                                      ImageContainer* aContainer)
-+{
-+  AutoLockImage autolock(aContainer);
-+  Task * t = new ImageBridgeCopyAndSendTask(this, aLayerID, autolock.GetImage());
-+  GetThread()->message_loop()->PostTask(FROM_HERE, t);
-+}
-+
-+/*
-+void ImageBridgeChild::SendSharedImageAsync(PRInt32 aLayerID,
-+                                            ImageBridgeChild::SharedImage& aImage)
-+{
-+  Task * t = new ImageBridgeSendTask(this, aLayerID, &aImage);
-+  GetThread()->message_loop()->PostTask(FROM_HERE, t);
-+}
-+*/
-+void ImageBridgeChild::AddImageContainerAsync(ImageContainer& toAdd)
-+{
-+  Task * t = new ImageBridgeContainerTask(this, &toAdd, CONTAINER_ADD);
-+  GetThread()->message_loop()->PostTask(FROM_HERE, t);  
-+}
-+void ImageBridgeChild::RemoveImageContainerAsync(ImageContainer& toRemove)
-+{
-+  Task * t = new ImageBridgeContainerTask(this, &toRemove, CONTAINER_REMOVE);
-+  GetThread()->message_loop()->PostTask(FROM_HERE, t);  
-+}
-+
-+void ImageBridgeChild::RemoveAllImageContainersAsync()
-+{
-+  Task * t = new ImageBridgeContainerTask(this, nsnull, CONTAINER_REMOVE_ALL);
-+  GetThread()->message_loop()->PostTask(FROM_HERE, t);  
-+}
-+
-+
-+} // layers
-+} // mozilla
++} // namespace
++} // namespace
 \ No newline at end of file
-diff --git a/gfx/layers/ipc/ImageBridgeChild.h b/gfx/layers/ipc/ImageBridgeChild.h
+diff --git a/gfx/layers/ipc/ImageContainerChild.h b/gfx/layers/ipc/ImageContainerChild.h
 new file mode 100644
 --- /dev/null
-+++ b/gfx/layers/ipc/ImageBridgeChild.h
-@@ -0,0 +1,119 @@
++++ b/gfx/layers/ipc/ImageContainerChild.h
+@@ -0,0 +1,79 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
-+#include "mozilla/layers/PImageBridgeChild.h"
-+#include "mozilla/LinkedList.h" 
-+#include "ImageLayers.h" 
++#ifndef MOZILLA_GFX_IMAGECONTAINERCHILD_H
++#define MOZILLA_GFX_IMAGECONTAINERCHILD_H
 +
-+class gfxSharedImageSurface;
++#include "mozilla/layers/PImageContainerChild.h"
++#include "mozilla/layers/ImageBridgeChild.h"
++#include "ImageLayers.h"
 +
-+namespace base {
-+class Thread;
++namespace mozilla {
++namespace layers {
++
++class ImageBridgeCopyAndSendTask;
++
++class ImageContainerChild : public PImageContainerChild
++{
++  friend class ImageBridgeCopyAndSendTask;
++public:
++  ImageContainerChild(ImageBridgeChild* aBridge, PRUint64 aHandle)
++  : mBridge(aBridge), mHandle(aHandle) {}
++
++  typedef MediaSharedImage SharedImage;
++  typedef MediaSurfaceDescriptor SurfaceDescriptor;
++  typedef MediaYUVImage YUVImage;
++
++  void SendImageAsync(Image* aImage);
++
++  inline ImageBridgeChild* GetImageBridgeChild() const {
++    return mBridge; 
++  }
++
++  inline MessageLoop* GetMessageLoop() const {
++    return mBridge->GetMessageLoop();
++  }
++
++  inline bool InImageBridgeChildThread() const {
++    return mBridge->InImageBridgeChildThread();
++  }
++
++  const ImageHandle& GetHandle() const
++  {
++    return mHandle;
++  }
++
++  bool RecvReleasedSharedImage(const MediaSharedImage& aImage);
++
++protected:
++  /**
++   * Same as ShadowLayerForwarder::AllocBuffer.
++   *
++   * TODO: better doc :)
++   */
++  bool AllocBuffer(const gfxIntSize& aSize,
++                   gfxASurface::gfxContentType aContent,
++                   gfxSharedImageSurface** aBuffer);
++
++  bool AllocSharedImage(const gfxIntSize& aSize,
++                        gfxASurface::gfxContentType aContent,
++                        MediaSharedImage& aImage);
++
++  void DestroySharedImage(MediaSharedImage& aSurface);
++
++  MediaSharedImage * CopyImageIntoSharedImage(Image* aImage);
++
++private:
++
++  ImageBridgeChild* mBridge;
++  ImageHandle mHandle;
++  // shared image pool here 
++};
++
++
++} // namespace
++} // namespace
++
++#endif
+\ No newline at end of file
+diff --git a/gfx/layers/ipc/ImageContainerParent.cpp b/gfx/layers/ipc/ImageContainerParent.cpp
+new file mode 100644
+--- /dev/null
++++ b/gfx/layers/ipc/ImageContainerParent.cpp
+@@ -0,0 +1,26 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/layers/ImageContainerParent.h"
++#include "mozilla/layers/ImageBridgeParent.h"
++
++
++namespace mozilla {
++namespace layers {
++
++
++bool ImageContainerParent::RecvPushSharedImage(const MediaSharedImage& aImage)
++{
++  printf(" -- ImageContainerParent::RecvPushSharedImage");
++
++  // TODO
++
++  mBridge->ScheduleComposition();
++  return true;
 +}
++
++
++} // namespace
++} // namespace
+\ No newline at end of file
+diff --git a/gfx/layers/ipc/ImageContainerParent.h b/gfx/layers/ipc/ImageContainerParent.h
+new file mode 100644
+--- /dev/null
++++ b/gfx/layers/ipc/ImageContainerParent.h
+@@ -0,0 +1,34 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef MOZILLA_GFX_IMAGECONTAINERPARENT_H
++#define MOZILLA_GFX_IMAGECONTAINERPARENT_H
++
++#include "mozilla/layers/PImageContainerParent.h"
 +
 +namespace mozilla {
 +namespace layers {
 +
 +class ImageBridgeParent;
-+class ImageBridgeContainerTask;
-+class ImageBridgeCopyAndSendTask;
-+class ImageBridgeConnectionTask;
 +
-+class ImageBridgeChild : public PImageBridgeChild
++class ImageContainerParent : public PImageContainerParent
 +{
-+// NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VideoBridgeChild)
-+friend class mozilla::layers::ImageContainer;
-+friend class mozilla::layers::ImageBridgeContainerTask;
-+friend class mozilla::layers::ImageBridgeCopyAndSendTask;
-+friend class mozilla::layers::ImageBridgeConnectionTask;
 +public:
-+  typedef PRInt32 CompositorID_t;
-+  //typedef PRInt32 LayerID_t;
-+  typedef MediaSharedImage SharedImage;
-+  typedef MediaSurfaceDescriptor SurfaceDescriptor;
-+  typedef MediaYUVImage YUVImage;
 +
-+  ImageBridgeChild(base::Thread& aThread);
-+  ~ImageBridgeChild();
++  ImageContainerParent(ImageBridgeParent* aBridge, PRUint64 aHandle)
++  : mBridge(aBridge), mHandle(aHandle) {}
 +
-+  // IPDL protocol
-+
-+  // override
-+  virtual bool RecvReleasedSharedImage(const LayerID& aLayerID, 
-+                                       const SharedImage& aImage);
-+  
-+  // Temporary, not suitable for cross-process layers
-+  // can be called from any thread
-+  void ConnectAsync(ImageBridgeParent* aParent);
-+  
-+  
-+  /**
-+   * Returns the ImageBrdugeChild's thread.
-+   *
-+   * Can be called from any thread.
-+   */
-+  base::Thread * GetThread() const
-+  {
-+    return mThread;
-+  }
-+
-+  /**
-+   * Returns true if the current thread is the ImageBrdugeChild's thread.
-+   *
-+   * Can be called from any thread.
-+   */
-+  bool InImageBridgeChildThread() const;
-+
-+  void AddImageContainerAsync(ImageContainer& toAdd);
-+  void RemoveImageContainerAsync(ImageContainer& toAdd);
-+  void RemoveAllImageContainersAsync();
++  bool RecvPushSharedImage(const MediaSharedImage& aImage);
 +
 +private:
-+
-+  /** 
-+   * must be called in the ImageBridgeChild thread.
-+   */
-+  void ConnectNow(ImageBridgeParent* aParent);
-+  /**
-+   * Dispatch a task in the ImageBridgeChild thread to send an 
-+   * image through IPC to the compositor.
-+   *
-+   * Can be called from any thread.
-+   */
-+  void SendSharedImageAsync(LayerID aLayerID, SharedImage& aSurface);
-+  void SendImageAsync(LayerID aLayerID, ImageContainer* aImage);
-+
-+  SharedImage * CopyImageIntoSharedImage(Image* aImage);
-+
-+  /**
-+   * Same as ShadowLayerForwarder::AllocBuffer.
-+   *
-+   * TODO: better doc
-+   */
-+  bool AllocBuffer(const gfxIntSize& aSize,
-+              gfxASurface::gfxContentType aContent,
-+              gfxSharedImageSurface** aBuffer);
-+
-+  bool AllocSharedImage(const gfxIntSize& aSize,
-+                        gfxASurface::gfxContentType aContent,
-+                        SharedImage& aImage);
-+
-+  void DestroySharedImage(SharedImage& aSurface);
-+
-+  void AddImageContainer(ImageContainer& aImageContainer);
-+  void RemoveImageContainer(ImageContainer& aImageContainer);
-+  void RemoveAllImageContainers();
-+
-+  base::Thread * mThread;
-+  // TODO: LinkedList is not thread-safe. It is not clear at the 
-+  // moment whether this part of the class will be accessed from 
-+  // several threads. If so, need a thread save solution 
-+  // Ideally it should be accessed only from within the 
-+  // ImageBridgeChild thread
-+  LinkedList<ImageContainer> mImageContainers;
++  ImageBridgeParent* mBridge;
++  ImageHandle mHandle;
 +};
 +
-+} // layers
-+} // mozilla
-\ No newline at end of file
-diff --git a/gfx/layers/ipc/ImageBridgeParent.cpp b/gfx/layers/ipc/ImageBridgeParent.cpp
-new file mode 100644
---- /dev/null
-+++ b/gfx/layers/ipc/ImageBridgeParent.cpp
-@@ -0,0 +1,54 @@
-+/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
-+ * This Source Code Form is subject to the terms of the Mozilla Public
-+ * License, v. 2.0. If a copy of the MPL was not distributed with this
-+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
-+#include "ImageBridgeParent.h"
-+#include "CompositorParent.h"
++} // namespace
++} // namespace
 +
-+#include "base/thread.h"
-+
-+#include "mozilla/layers/ShadowLayers.h" // temp
-+#include "mozilla/layers/RenderTrace.h" // temp
-+
-+namespace mozilla {
-+namespace layers {
-+
-+MediaSharedImage* _current_shared_image_hack = 0;
-+
-+bool ImageBridgeParent::RecvPushSharedImage(const LayerID& aLayerID, 
-+                                            const MediaSharedImage& aImage)
-+{
-+  printf("ImageBridgeParent::RecvPushSharedImage (layerID: %i)\n", aLayerID);
-+  
-+  Layer * targetLayer = mCompositorParent->GetLayerManager()->GetLayerByID(aLayerID);
-+  if (targetLayer) {
-+
-+      ShadowImageLayer * asShadowLayer = static_cast<ShadowImageLayer*>(targetLayer);
-+
-+      asShadowLayer->SetImageBridgeParent(this);
-+      asShadowLayer->_hacked_Swap(aImage);
-+      mCompositorParent->ScheduleComposition();
-+
-+  } else { printf("XXXXXX layer %i not found!\n", (int)aLayerID); }
-+
-+  SendReleasedSharedImage(aLayerID,aImage);
-+  return true;
-+}
-+
-+ImageBridgeParent::ImageBridgeParent(CompositorParent* aCompositor)
-+: mCompositorParent(aCompositor)
-+{
-+
-+}
-+
-+MessageLoop * ImageBridgeParent::GetMessageLoop() {
-+  return mCompositorParent->CompositorLoop();
-+}
-+
-+ImageBridgeParent::~ImageBridgeParent()
-+{
-+}
-+
-+} // layers
-+} // mozilla
-\ No newline at end of file
-diff --git a/gfx/layers/ipc/ImageBridgeParent.h b/gfx/layers/ipc/ImageBridgeParent.h
-new file mode 100644
---- /dev/null
-+++ b/gfx/layers/ipc/ImageBridgeParent.h
-@@ -0,0 +1,46 @@
-+/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
-+ * This Source Code Form is subject to the terms of the Mozilla Public
-+ * License, v. 2.0. If a copy of the MPL was not distributed with this
-+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-+
-+#include "mozilla/layers/PImageBridgeParent.h"
-+#include "ShadowLayers.h"
-+
-+
-+namespace base {
-+class Thread;
-+}
-+
-+namespace mozilla {
-+namespace layers {
-+
-+class ImageBridgeChild;
-+class CompositorParent;
-+
-+class ImageBridgeParent : public PImageBridgeParent
-+{
-+// NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VideoBridgeChild)
-+public:
-+  typedef PRInt32 CompositorID_t;
-+  typedef MediaSharedImage SharedImage;
-+  // IPDL protocol
-+
-+  ImageBridgeParent(CompositorParent* aCompositor);
-+  ~ImageBridgeParent();
-+
-+  // override
-+  virtual bool RecvPushSharedImage(const LayerID& aLayerID, 
-+                                   const SharedImage& aImage);
-+
-+  // -------------
-+
-+  MessageLoop * GetMessageLoop();
-+  
-+private:
-+
-+  // TODO: a list of ShadowImageLayers here
-+  CompositorParent * mCompositorParent;
-+};
-+
-+} // layers
-+} // mozilla
++#endif
 \ No newline at end of file
 diff --git a/gfx/layers/ipc/PImageBridge.ipdl b/gfx/layers/ipc/PImageBridge.ipdl
 new file mode 100644
 --- /dev/null
 +++ b/gfx/layers/ipc/PImageBridge.ipdl
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,31 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++include protocol PImageContainer;
++
++using ImageHandle;
++
++namespace mozilla {
++namespace layers {
++
++/**
++ * The PImageBridge protocol is used to allow isolated threads or processes to push
++ * frames directly to the compositor thread/process without relying on the main thread
++ * which might be too busy dealing with content script.
++ */
++async protocol PImageBridge
++{
++  manages PImageContainer;
++
++parent:
++  WillStop();
++  
++  // TODO replace PRUint 64 by a proper ImageHandle
++  PImageContainer(PRUint64 handle_id);
++};
++
++
++} //namespace
++} //namespace
+\ No newline at end of file
+diff --git a/gfx/layers/ipc/PImageContainer.ipdl b/gfx/layers/ipc/PImageContainer.ipdl
+new file mode 100644
+--- /dev/null
++++ b/gfx/layers/ipc/PImageContainer.ipdl
+@@ -0,0 +1,73 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++include protocol PImageBridge;
 +
 +include "gfxipc/ShadowLayerUtils.h";
 +
@@ -996,6 +1072,10 @@ new file mode 100644
 +
 +namespace mozilla {
 +namespace layers {
++
++struct ImageHandle {
++  PRUint64 id;
++};
 +
 +struct MediaSurfaceDescriptorD3D10 {
 +  WindowsHandle handle;
@@ -1020,27 +1100,74 @@ new file mode 100644
 +  null_t;
 +};
 +
++
 +/**
 + * The PImageBridge protocol is used to allow isolated threads or processes to push
 + * frames directly to the compositor thread/process without relying on the main thread
 + * which might be too busy dealing with content script.
 + */
-+async protocol PImageBridge
++async protocol PImageContainer
 +{
-+parent:
-+    // Send a SharedImage to the compositor giving to the compositor ownership 
-+    // of the image.
-+    PushSharedImage(PRUint64 layerID, MediaSharedImage image);
++  manager PImageBridge;
 +
 +child:
-+    // Give back the child thread/process ownership to a SharedImage
-+    ReleasedSharedImage(PRUint64 layerID, MediaSharedImage image);
++  // Give back the child thread/process ownership to a SharedImage
++  ReleasedSharedImage(MediaSharedImage image);
++
++parent:
++
++  // Send a SharedImage to the compositor giving to the compositor ownership 
++  // of the image.
++  PushSharedImage(MediaSharedImage image);
++  __delete__();
++
 +};
 +
 +
 +} //namespace
 +} //namespace
 \ No newline at end of file
+diff --git a/gfx/layers/ipc/PLayers.ipdl b/gfx/layers/ipc/PLayers.ipdl
+--- a/gfx/layers/ipc/PLayers.ipdl
++++ b/gfx/layers/ipc/PLayers.ipdl
+@@ -40,32 +40,37 @@ struct OpCreateContainerLayer  { PLayer 
+ struct OpCreateImageLayer      { PLayer layer; };
+ struct OpCreateColorLayer      { PLayer layer; };
+ struct OpCreateCanvasLayer     { PLayer layer; };
+ 
+ struct SurfaceDescriptorD3D10 {
+   WindowsHandle handle;
+ };
+ 
++struct Handle {
++  PRUint64 id;
++};
++
+ union SurfaceDescriptor {
+   Shmem;
+   SurfaceDescriptorD3D10;
+   SurfaceDescriptorX11;
+ };
+ 
+ struct YUVImage {
+   Shmem Ydata;
+   Shmem Udata;
+   Shmem Vdata;
+   nsIntRect picture;
+ };
+ 
+ union SharedImage {
+   SurfaceDescriptor;
+   YUVImage;
++  Handle;
+   null_t;
+ };
+ 
+ struct ThebesBuffer {
+   SurfaceDescriptor buffer;
+   nsIntRect rect;
+   nsIntPoint rotation; 
+ };
 diff --git a/gfx/layers/ipc/ShadowLayers.cpp b/gfx/layers/ipc/ShadowLayers.cpp
 --- a/gfx/layers/ipc/ShadowLayers.cpp
 +++ b/gfx/layers/ipc/ShadowLayers.cpp
@@ -1125,7 +1252,7 @@ diff --git a/gfx/layers/ipc/ShadowLayers.h b/gfx/layers/ipc/ShadowLayers.h
 diff --git a/gfx/layers/ipc/ipdl.mk b/gfx/layers/ipc/ipdl.mk
 --- a/gfx/layers/ipc/ipdl.mk
 +++ b/gfx/layers/ipc/ipdl.mk
-@@ -1,9 +1,10 @@
+@@ -1,9 +1,11 @@
  # This Source Code Form is subject to the terms of the Mozilla Public
  # License, v. 2.0. If a copy of the MPL was not distributed with this
  # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -1135,6 +1262,7 @@ diff --git a/gfx/layers/ipc/ipdl.mk b/gfx/layers/ipc/ipdl.mk
    PLayer.ipdl \
    PLayers.ipdl \
 +  PImageBridge.ipdl \
++  PImageContainer.ipdl \
    $(NULL)
 diff --git a/gfx/layers/opengl/ImageLayerOGL.cpp b/gfx/layers/opengl/ImageLayerOGL.cpp
 --- a/gfx/layers/opengl/ImageLayerOGL.cpp
@@ -1147,7 +1275,7 @@ diff --git a/gfx/layers/opengl/ImageLayerOGL.cpp b/gfx/layers/opengl/ImageLayerO
  
  #include "gfxSharedImageSurface.h"
 -
-+#include "mozilla/layers/ImageBridgeParent.h"
++#include "mozilla/layers/ImageContainerParent.h"
  #include "ImageLayerOGL.h"
  #include "gfxImageSurface.h"
  #include "gfxUtils.h"
@@ -1156,15 +1284,17 @@ diff --git a/gfx/layers/opengl/ImageLayerOGL.cpp b/gfx/layers/opengl/ImageLayerO
  #if defined(MOZ_WIDGET_GTK2) && !defined(MOZ_PLATFORM_MAEMO)
  # include "GLXLibrary.h"
  # include "mozilla/X11Util.h"
-@@ -646,16 +646,50 @@ ShadowImageLayerOGL::ShadowImageLayerOGL
+@@ -644,16 +644,50 @@ ShadowImageLayerOGL::ShadowImageLayerOGL
+   : ShadowImageLayer(aManager, nsnull)
+   , LayerOGL(aManager)
  {
    mImplData = static_cast<LayerOGL*>(this);
  }
  
  ShadowImageLayerOGL::~ShadowImageLayerOGL()
  {}
- 
- bool
++/*
++bool
 +ShadowImageLayerOGL::_hack_Init(const MediaSharedImage& aFront)
 +{
 +  MediaYUVImage yuv = aFront.get_MediaYUVImage();
@@ -1196,18 +1326,16 @@ diff --git a/gfx/layers/opengl/ImageLayerOGL.cpp b/gfx/layers/opengl/ImageLayerO
 +  SetClamping(gl(), mYUVTexture[2].GetTextureID());
 +  return true;
 +}
-+
-+
-+bool
++*/
+ 
+ bool
  ShadowImageLayerOGL::Init(const SharedImage& aFront)
  {
    if (aFront.type() == SharedImage::TSurfaceDescriptor) {
      SurfaceDescriptor desc = aFront.get_SurfaceDescriptor();
      nsRefPtr<gfxASurface> surf =
        ShadowLayerForwarder::OpenDescriptor(desc);
-     mSize = surf->GetSize();
-     mTexImage = gl()->CreateTextureImage(nsIntSize(mSize.width, mSize.height),
-@@ -693,20 +727,56 @@ ShadowImageLayerOGL::Init(const SharedIm
+@@ -693,20 +727,58 @@ ShadowImageLayerOGL::Init(const SharedIm
      SetClamping(gl(), mYUVTexture[0].GetTextureID());
      SetClamping(gl(), mYUVTexture[1].GetTextureID());
      SetClamping(gl(), mYUVTexture[2].GetTextureID());
@@ -1216,6 +1344,7 @@ diff --git a/gfx/layers/opengl/ImageLayerOGL.cpp b/gfx/layers/opengl/ImageLayerO
    return false;
  }
  
++/*
 +void ShadowImageLayerOGL::_hacked_Swap(const MediaSharedImage& aNewFront)
 +{
 +  if (!mDestroyed) {
@@ -1247,6 +1376,7 @@ diff --git a/gfx/layers/opengl/ImageLayerOGL.cpp b/gfx/layers/opengl/ImageLayerO
 +    UploadYUVToTexture(gl(), data, &mYUVTexture[0], &mYUVTexture[1], &mYUVTexture[2]);
 +  }
 +}
++*/
 +
  void
  ShadowImageLayerOGL::Swap(const SharedImage& aNewFront,
