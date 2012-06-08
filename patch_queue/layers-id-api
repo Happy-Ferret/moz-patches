@@ -88,8 +88,8 @@ diff --git a/gfx/layers/Layers.cpp b/gfx/layers/Layers.cpp
 +  if (mID == aID) return this;
 +  Layer* it = GetFirstChild();
 +  while (it != nsnull) {
-+    Layer* res = it->GetLayerByID(aID); 
-+    if (res != nsnull) return it;
++    Layer* res = it->GetLayerByID(aID);
++    if (res != nsnull) return res;
 +    it = it->GetNextSibling();
 +  }
 +  return nsnull;
@@ -115,7 +115,7 @@ diff --git a/gfx/layers/Layers.h b/gfx/layers/Layers.h
  class ShadowLayerManager;
  class SpecificLayerAttributes;
  
-+typedef PRUint32 LayerID;
++typedef PRUint64 LayerID;
  /**
   * The viewport and displayport metrics for the painted frame at the
   * time of a layer-tree transaction.  These metrics are especially
@@ -225,3 +225,1268 @@ diff --git a/gfx/layers/Layers.h b/gfx/layers/Layers.h
     * container is backend-specific. ComputeEffectiveTransforms must also set
     * mUseIntermediateSurface.
     */
+diff --git a/gfx/layers/basic/BasicLayers.cpp b/gfx/layers/basic/BasicLayers.cpp
+--- a/gfx/layers/basic/BasicLayers.cpp
++++ b/gfx/layers/basic/BasicLayers.cpp
+@@ -2906,18 +2906,18 @@ protected:
+     NS_RUNTIMEABORT("ShadowThebesLayer can't paint content");
+     return nsnull;
+   }
+ };
+ 
+ 
+ class BasicShadowThebesLayer : public ShadowThebesLayer, public BasicImplData {
+ public:
+-  BasicShadowThebesLayer(BasicShadowLayerManager* aLayerManager)
+-    : ShadowThebesLayer(aLayerManager, static_cast<BasicImplData*>(this))
++  BasicShadowThebesLayer(BasicShadowLayerManager* aLayerManager, LayerID aID)
++    : ShadowThebesLayer(aLayerManager, static_cast<BasicImplData*>(this), aID)
+   {
+     MOZ_COUNT_CTOR(BasicShadowThebesLayer);
+   }
+   virtual ~BasicShadowThebesLayer()
+   {
+     // If Disconnect() wasn't called on us, then we assume that the
+     // remote side shut down and IPC is disconnected, so we let IPDL
+     // clean up our front surface Shmem.
+@@ -3042,18 +3042,18 @@ BasicShadowThebesLayer::PaintThebes(gfxC
+ 
+ class BasicShadowContainerLayer : public ShadowContainerLayer, public BasicImplData {
+   template<class Container>
+   friend void ContainerInsertAfter(Layer* aChild, Layer* aAfter, Container* aContainer);
+   template<class Container>
+   friend void ContainerRemoveChild(Layer* aChild, Container* aContainer);
+ 
+ public:
+-  BasicShadowContainerLayer(BasicShadowLayerManager* aLayerManager) :
+-    ShadowContainerLayer(aLayerManager, static_cast<BasicImplData*>(this))
++  BasicShadowContainerLayer(BasicShadowLayerManager* aLayerManager, LayerID aID) :
++    ShadowContainerLayer(aLayerManager, static_cast<BasicImplData*>(this), aID)
+   {
+     MOZ_COUNT_CTOR(BasicShadowContainerLayer);
+   }
+   virtual ~BasicShadowContainerLayer()
+   {
+     while (mFirstChild) {
+       ContainerRemoveChild(mFirstChild, this);
+     }
+@@ -3098,18 +3098,18 @@ public:
+      */
+     mUseIntermediateSurface = GetMaskLayer() ||
+                               (GetEffectiveOpacity() != 1.0 && HasMultipleChildren());
+   }
+ };
+ 
+ class BasicShadowImageLayer : public ShadowImageLayer, public BasicImplData {
+ public:
+-  BasicShadowImageLayer(BasicShadowLayerManager* aLayerManager) :
+-    ShadowImageLayer(aLayerManager, static_cast<BasicImplData*>(this))
++  BasicShadowImageLayer(BasicShadowLayerManager* aLayerManager, LayerID aID) :
++    ShadowImageLayer(aLayerManager, static_cast<BasicImplData*>(this), aID)
+   {
+     MOZ_COUNT_CTOR(BasicShadowImageLayer);
+   }
+   virtual ~BasicShadowImageLayer()
+   {
+     MOZ_COUNT_DTOR(BasicShadowImageLayer);
+   }
+ 
+@@ -3199,18 +3199,18 @@ BasicShadowImageLayer::GetAsSurface()
+ 
+   return BasicManager()->OpenDescriptor(mFrontBuffer);
+  }
+ 
+ class BasicShadowColorLayer : public ShadowColorLayer,
+                               public BasicImplData
+ {
+ public:
+-  BasicShadowColorLayer(BasicShadowLayerManager* aLayerManager) :
+-    ShadowColorLayer(aLayerManager, static_cast<BasicImplData*>(this))
++  BasicShadowColorLayer(BasicShadowLayerManager* aLayerManager, LayerID aID) :
++    ShadowColorLayer(aLayerManager, static_cast<BasicImplData*>(this), aID)
+   {
+     MOZ_COUNT_CTOR(BasicShadowColorLayer);
+   }
+   virtual ~BasicShadowColorLayer()
+   {
+     MOZ_COUNT_DTOR(BasicShadowColorLayer);
+   }
+ 
+@@ -3221,18 +3221,18 @@ public:
+                                   aContext, aMaskLayer);
+   }
+ };
+ 
+ class BasicShadowCanvasLayer : public ShadowCanvasLayer,
+                                public BasicImplData
+ {
+ public:
+-  BasicShadowCanvasLayer(BasicShadowLayerManager* aLayerManager) :
+-    ShadowCanvasLayer(aLayerManager, static_cast<BasicImplData*>(this))
++  BasicShadowCanvasLayer(BasicShadowLayerManager* aLayerManager, LayerID aID) :
++    ShadowCanvasLayer(aLayerManager, static_cast<BasicImplData*>(this), aID)
+   {
+     MOZ_COUNT_CTOR(BasicShadowCanvasLayer);
+   }
+   virtual ~BasicShadowCanvasLayer()
+   {
+     MOZ_COUNT_DTOR(BasicShadowCanvasLayer);
+   }
+ 
+@@ -3421,52 +3421,52 @@ BasicShadowLayerManager::CreateCanvasLay
+ {
+   NS_ASSERTION(InConstruction(), "Only allowed in construction phase");
+   nsRefPtr<BasicShadowableCanvasLayer> layer =
+     new BasicShadowableCanvasLayer(this);
+   MAYBE_CREATE_SHADOW(Canvas);
+   return layer.forget();
+ }
+ already_AddRefed<ShadowThebesLayer>
+-BasicShadowLayerManager::CreateShadowThebesLayer()
++BasicShadowLayerManager::CreateShadowThebesLayer(LayerID aID)
+ {
+   NS_ASSERTION(InConstruction(), "Only allowed in construction phase");
+-  nsRefPtr<ShadowThebesLayer> layer = new BasicShadowThebesLayer(this);
++  nsRefPtr<ShadowThebesLayer> layer = new BasicShadowThebesLayer(this, aID);
+   return layer.forget();
+ }
+ 
+ already_AddRefed<ShadowContainerLayer>
+-BasicShadowLayerManager::CreateShadowContainerLayer()
++BasicShadowLayerManager::CreateShadowContainerLayer(LayerID aID)
+ {
+   NS_ASSERTION(InConstruction(), "Only allowed in construction phase");
+-  nsRefPtr<ShadowContainerLayer> layer = new BasicShadowContainerLayer(this);
++  nsRefPtr<ShadowContainerLayer> layer = new BasicShadowContainerLayer(this, aID);
+   return layer.forget();
+ }
+ 
+ already_AddRefed<ShadowImageLayer>
+-BasicShadowLayerManager::CreateShadowImageLayer()
++BasicShadowLayerManager::CreateShadowImageLayer(LayerID aID)
+ {
+   NS_ASSERTION(InConstruction(), "Only allowed in construction phase");
+-  nsRefPtr<ShadowImageLayer> layer = new BasicShadowImageLayer(this);
++  nsRefPtr<ShadowImageLayer> layer = new BasicShadowImageLayer(this, aID);
+   return layer.forget();
+ }
+ 
+ already_AddRefed<ShadowColorLayer>
+-BasicShadowLayerManager::CreateShadowColorLayer()
++BasicShadowLayerManager::CreateShadowColorLayer(LayerID aID)
+ {
+   NS_ASSERTION(InConstruction(), "Only allowed in construction phase");
+-  nsRefPtr<ShadowColorLayer> layer = new BasicShadowColorLayer(this);
++  nsRefPtr<ShadowColorLayer> layer = new BasicShadowColorLayer(this, aID);
+   return layer.forget();
+ }
+ 
+ already_AddRefed<ShadowCanvasLayer>
+-BasicShadowLayerManager::CreateShadowCanvasLayer()
++BasicShadowLayerManager::CreateShadowCanvasLayer(LayerID aID)
+ {
+   NS_ASSERTION(InConstruction(), "Only allowed in construction phase");
+-  nsRefPtr<ShadowCanvasLayer> layer = new BasicShadowCanvasLayer(this);
++  nsRefPtr<ShadowCanvasLayer> layer = new BasicShadowCanvasLayer(this, aID);
+   return layer.forget();
+ }
+ 
+ BasicShadowLayerManager::BasicShadowLayerManager(nsIWidget* aWidget) :
+   BasicLayerManager(aWidget)
+ {
+   MOZ_COUNT_CTOR(BasicShadowLayerManager);
+ }
+diff --git a/gfx/layers/basic/BasicLayers.h b/gfx/layers/basic/BasicLayers.h
+--- a/gfx/layers/basic/BasicLayers.h
++++ b/gfx/layers/basic/BasicLayers.h
+@@ -98,25 +98,25 @@ public:
+   virtual already_AddRefed<ThebesLayer> CreateThebesLayer();
+   virtual already_AddRefed<ContainerLayer> CreateContainerLayer();
+   virtual already_AddRefed<ImageLayer> CreateImageLayer();
+   virtual already_AddRefed<CanvasLayer> CreateCanvasLayer();
+   virtual already_AddRefed<ColorLayer> CreateColorLayer();
+   virtual already_AddRefed<ReadbackLayer> CreateReadbackLayer();
+   virtual ImageFactory *GetImageFactory();
+ 
+-  virtual already_AddRefed<ShadowThebesLayer> CreateShadowThebesLayer()
++  virtual already_AddRefed<ShadowThebesLayer> CreateShadowThebesLayer(LayerID aID)
+   { return nsnull; }
+-  virtual already_AddRefed<ShadowContainerLayer> CreateShadowContainerLayer()
++  virtual already_AddRefed<ShadowContainerLayer> CreateShadowContainerLayer(LayerID aID)
+   { return nsnull; }
+-  virtual already_AddRefed<ShadowImageLayer> CreateShadowImageLayer()
++  virtual already_AddRefed<ShadowImageLayer> CreateShadowImageLayer(LayerID aID)
+   { return nsnull; }
+-  virtual already_AddRefed<ShadowColorLayer> CreateShadowColorLayer()
++  virtual already_AddRefed<ShadowColorLayer> CreateShadowColorLayer(LayerID aID)
+   { return nsnull; }
+-  virtual already_AddRefed<ShadowCanvasLayer> CreateShadowCanvasLayer()
++  virtual already_AddRefed<ShadowCanvasLayer> CreateShadowCanvasLayer(LayerID aID)
+   { return nsnull; }
+ 
+   virtual LayersBackend GetBackendType() { return LAYERS_BASIC; }
+   virtual void GetBackendName(nsAString& name) { name.AssignLiteral("Basic"); }
+ 
+ #ifdef DEBUG
+   bool InConstruction() { return mPhase == PHASE_CONSTRUCTION; }
+   bool InDrawing() { return mPhase == PHASE_DRAWING; }
+@@ -222,21 +222,21 @@ public:
+ 
+   virtual void Mutated(Layer* aLayer);
+ 
+   virtual already_AddRefed<ThebesLayer> CreateThebesLayer();
+   virtual already_AddRefed<ContainerLayer> CreateContainerLayer();
+   virtual already_AddRefed<ImageLayer> CreateImageLayer();
+   virtual already_AddRefed<CanvasLayer> CreateCanvasLayer();
+   virtual already_AddRefed<ColorLayer> CreateColorLayer();
+-  virtual already_AddRefed<ShadowThebesLayer> CreateShadowThebesLayer();
+-  virtual already_AddRefed<ShadowContainerLayer> CreateShadowContainerLayer();
+-  virtual already_AddRefed<ShadowImageLayer> CreateShadowImageLayer();
+-  virtual already_AddRefed<ShadowColorLayer> CreateShadowColorLayer();
+-  virtual already_AddRefed<ShadowCanvasLayer> CreateShadowCanvasLayer();
++  virtual already_AddRefed<ShadowThebesLayer> CreateShadowThebesLayer(LayerID aID);
++  virtual already_AddRefed<ShadowContainerLayer> CreateShadowContainerLayer(LayerID aID);
++  virtual already_AddRefed<ShadowImageLayer> CreateShadowImageLayer(LayerID aID);
++  virtual already_AddRefed<ShadowColorLayer> CreateShadowColorLayer(LayerID aID);
++  virtual already_AddRefed<ShadowCanvasLayer> CreateShadowCanvasLayer(LayerID aID);
+ 
+   ShadowableLayer* Hold(Layer* aLayer);
+ 
+   bool HasShadowManager() const { return ShadowLayerForwarder::HasShadowManager(); }
+ 
+   virtual bool IsCompositingCheap();
+   virtual bool HasShadowManagerInternal() const { return HasShadowManager(); }
+ 
+diff --git a/gfx/layers/d3d10/LayerManagerD3D10.cpp b/gfx/layers/d3d10/LayerManagerD3D10.cpp
+--- a/gfx/layers/d3d10/LayerManagerD3D10.cpp
++++ b/gfx/layers/d3d10/LayerManagerD3D10.cpp
+@@ -336,33 +336,33 @@ LayerManagerD3D10::EndTransaction(DrawTh
+ already_AddRefed<ThebesLayer>
+ LayerManagerD3D10::CreateThebesLayer()
+ {
+   nsRefPtr<ThebesLayer> layer = new ThebesLayerD3D10(this);
+   return layer.forget();
+ }
+  
+ already_AddRefed<ShadowThebesLayer>
+-LayerManagerD3D10::CreateShadowThebesLayer()
++LayerManagerD3D10::CreateShadowThebesLayer(LayerID aID)
+ {
+-  nsRefPtr<ShadowThebesLayerD3D10> layer = new ShadowThebesLayerD3D10(this);
++  nsRefPtr<ShadowThebesLayerD3D10> layer = new ShadowThebesLayerD3D10(this, aID);
+   return layer.forget();
+ }
+ 
+ already_AddRefed<ContainerLayer>
+ LayerManagerD3D10::CreateContainerLayer()
+ {
+   nsRefPtr<ContainerLayer> layer = new ContainerLayerD3D10(this);
+   return layer.forget();
+ }
+ 
+ already_AddRefed<ShadowContainerLayer>
+-LayerManagerD3D10::CreateShadowContainerLayer()
++LayerManagerD3D10::CreateShadowContainerLayer(LayerID aID)
+ {
+-  nsRefPtr<ShadowContainerLayer> layer = new ShadowContainerLayerD3D10(this);
++  nsRefPtr<ShadowContainerLayer> layer = new ShadowContainerLayerD3D10(this, aID);
+   return layer.forget();
+ }
+ 
+ already_AddRefed<ImageLayer>
+ LayerManagerD3D10::CreateImageLayer()
+ {
+   nsRefPtr<ImageLayer> layer = new ImageLayerD3D10(this);
+   return layer.forget();
+@@ -867,17 +867,17 @@ LayerD3D10::LoadMaskTexture()
+       static_cast<LayerD3D10*>(maskLayer->ImplData())->GetAsTexture(&size);
+   
+     if (!maskSRV) {
+       return SHADER_NO_MASK;
+     }
+ 
+     gfxMatrix maskTransform;
+     bool maskIs2D = maskLayer->GetEffectiveTransform().CanDraw2D(&maskTransform);
+-    NS_ASSERTION(maskIs2D, "How did we end up with a 3D transform here?!");
++    NS_ASSERTION(maskIs2D, "How did we end up with a 3D transform here?!");
+     gfxRect bounds = gfxRect(gfxPoint(), size);
+     bounds = maskTransform.TransformBounds(bounds);
+ 
+     effect()->GetVariableByName("vMaskQuad")->AsVector()->SetFloatVector(
+       ShaderConstantRectD3D10(
+         (float)bounds.x,
+         (float)bounds.y,
+         (float)bounds.width,
+diff --git a/gfx/layers/d3d10/LayerManagerD3D10.h b/gfx/layers/d3d10/LayerManagerD3D10.h
+--- a/gfx/layers/d3d10/LayerManagerD3D10.h
++++ b/gfx/layers/d3d10/LayerManagerD3D10.h
+@@ -110,31 +110,31 @@ public:
+   }
+ 
+   virtual PRInt32 GetMaxTextureSize() const
+   {
+     return MAX_TEXTURE_SIZE;
+   }
+ 
+   virtual already_AddRefed<ThebesLayer> CreateThebesLayer();
+-  virtual already_AddRefed<ShadowThebesLayer> CreateShadowThebesLayer();
++  virtual already_AddRefed<ShadowThebesLayer> CreateShadowThebesLayer(LayerID aID);
+ 
+   virtual already_AddRefed<ContainerLayer> CreateContainerLayer();
+-  virtual already_AddRefed<ShadowContainerLayer> CreateShadowContainerLayer();
++  virtual already_AddRefed<ShadowContainerLayer> CreateShadowContainerLayer(LayerID aID);
+ 
+   virtual already_AddRefed<ImageLayer> CreateImageLayer();
+-  virtual already_AddRefed<ShadowImageLayer> CreateShadowImageLayer()
++  virtual already_AddRefed<ShadowImageLayer> CreateShadowImageLayer(LayerID aID)
+   { return nsnull; }
+ 
+   virtual already_AddRefed<ColorLayer> CreateColorLayer();
+-  virtual already_AddRefed<ShadowColorLayer> CreateShadowColorLayer()
++  virtual already_AddRefed<ShadowColorLayer> CreateShadowColorLayer(LayerID aID)
+   { return nsnull; }
+ 
+   virtual already_AddRefed<CanvasLayer> CreateCanvasLayer();
+-  virtual already_AddRefed<ShadowCanvasLayer> CreateShadowCanvasLayer()
++  virtual already_AddRefed<ShadowCanvasLayer> CreateShadowCanvasLayer(LayerID aID)
+   { return nsnull; }
+ 
+   virtual already_AddRefed<ReadbackLayer> CreateReadbackLayer();
+ 
+   virtual already_AddRefed<gfxASurface>
+     CreateOptimalSurface(const gfxIntSize &aSize,
+                          gfxASurface::gfxImageFormat imageFormat);
+ 
+diff --git a/gfx/layers/d3d9/CanvasLayerD3D9.cpp b/gfx/layers/d3d9/CanvasLayerD3D9.cpp
+--- a/gfx/layers/d3d9/CanvasLayerD3D9.cpp
++++ b/gfx/layers/d3d9/CanvasLayerD3D9.cpp
+@@ -271,18 +271,18 @@ CanvasLayerD3D9::CreateTexture()
+   }
+   if (FAILED(hr)) {
+     mD3DManager->ReportFailure(NS_LITERAL_CSTRING("CanvasLayerD3D9::CreateTexture() failed"),
+                                  hr);
+     return;
+   }
+ }
+ 
+-ShadowCanvasLayerD3D9::ShadowCanvasLayerD3D9(LayerManagerD3D9* aManager)
+-  : ShadowCanvasLayer(aManager, nsnull)
++ShadowCanvasLayerD3D9::ShadowCanvasLayerD3D9(LayerManagerD3D9* aManager, LayerID aID)
++  : ShadowCanvasLayer(aManager, nsnull, aID)
+   , LayerD3D9(aManager)
+   , mNeedsYFlip(false)
+ {
+   mImplData = static_cast<LayerD3D9*>(this);
+ }
+  
+ ShadowCanvasLayerD3D9::~ShadowCanvasLayerD3D9()
+ {}
+diff --git a/gfx/layers/d3d9/CanvasLayerD3D9.h b/gfx/layers/d3d9/CanvasLayerD3D9.h
+--- a/gfx/layers/d3d9/CanvasLayerD3D9.h
++++ b/gfx/layers/d3d9/CanvasLayerD3D9.h
+@@ -1,19 +1,19 @@
+ /* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+  * This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #ifndef GFX_CANVASLAYERD3D9_H
+ #define GFX_CANVASLAYERD3D9_H
+ 
+-#include "LayerManagerD3D9.h"
+-#include "GLContext.h"
+-#include "gfxASurface.h"
++#include "LayerManagerD3D9.h"
++#include "GLContext.h"
++#include "gfxASurface.h"
+ 
+ namespace mozilla {
+ namespace layers {
+ 
+ class ShadowBufferD3D9;
+ 
+ class THEBES_API CanvasLayerD3D9 :
+   public CanvasLayer,
+@@ -81,17 +81,17 @@ protected:
+ 
+ // NB: eventually we'll have separate shadow canvas2d and shadow
+ // canvas3d layers, but currently they look the same from the
+ // perspective of the compositor process
+ class ShadowCanvasLayerD3D9 : public ShadowCanvasLayer,
+                              public LayerD3D9
+ {
+ public:
+-  ShadowCanvasLayerD3D9(LayerManagerD3D9* aManager);
++  ShadowCanvasLayerD3D9(LayerManagerD3D9* aManager, LayerID aID);
+   virtual ~ShadowCanvasLayerD3D9();
+ 
+   // CanvasLayer impl
+   virtual void Initialize(const Data& aData);
+   // This isn't meaningful for shadow canvas.
+   virtual void Updated(const nsIntRect&) {}
+ 
+   // ShadowCanvasLayer impl
+diff --git a/gfx/layers/d3d9/ColorLayerD3D9.h b/gfx/layers/d3d9/ColorLayerD3D9.h
+--- a/gfx/layers/d3d9/ColorLayerD3D9.h
++++ b/gfx/layers/d3d9/ColorLayerD3D9.h
+@@ -27,18 +27,18 @@ public:
+ 
+   virtual void RenderLayer();
+ };
+ 
+ class ShadowColorLayerD3D9 : public ShadowColorLayer,
+                             public LayerD3D9
+ {
+ public:
+-  ShadowColorLayerD3D9(LayerManagerD3D9 *aManager)
+-    : ShadowColorLayer(aManager, NULL)
++  ShadowColorLayerD3D9(LayerManagerD3D9 *aManager, LayerID aID)
++    : ShadowColorLayer(aManager, NULL, aID)
+     , LayerD3D9(aManager)
+   { 
+     mImplData = static_cast<LayerD3D9*>(this);
+   }
+   ~ShadowColorLayerD3D9() { Destroy(); }
+ 
+   // LayerOGL Implementation
+   virtual Layer* GetLayer() { return this; }
+diff --git a/gfx/layers/d3d9/ContainerLayerD3D9.cpp b/gfx/layers/d3d9/ContainerLayerD3D9.cpp
+--- a/gfx/layers/d3d9/ContainerLayerD3D9.cpp
++++ b/gfx/layers/d3d9/ContainerLayerD3D9.cpp
+@@ -331,18 +331,18 @@ void
+ ContainerLayerD3D9::LayerManagerDestroyed()
+ {
+   while (mFirstChild) {
+     GetFirstChildD3D9()->LayerManagerDestroyed();
+     RemoveChild(mFirstChild);
+   }
+ }
+ 
+-ShadowContainerLayerD3D9::ShadowContainerLayerD3D9(LayerManagerD3D9 *aManager)
+-  : ShadowContainerLayer(aManager, NULL)
++ShadowContainerLayerD3D9::ShadowContainerLayerD3D9(LayerManagerD3D9 *aManager, LayerID aID)
++  : ShadowContainerLayer(aManager, NULL, aID)
+   , LayerD3D9(aManager)
+ {
+   mImplData = static_cast<LayerD3D9*>(this);
+ }
+  
+ ShadowContainerLayerD3D9::~ShadowContainerLayerD3D9()
+ {
+   Destroy();
+diff --git a/gfx/layers/d3d9/ContainerLayerD3D9.h b/gfx/layers/d3d9/ContainerLayerD3D9.h
+--- a/gfx/layers/d3d9/ContainerLayerD3D9.h
++++ b/gfx/layers/d3d9/ContainerLayerD3D9.h
+@@ -63,17 +63,17 @@ class ShadowContainerLayerD3D9 : public 
+   template<class Container>
+   friend void ContainerInsertAfter(Container* aContainer, Layer* aChild, Layer* aAfter);
+   template<class Container>
+   friend void ContainerRemoveChild(Container* aContainer, Layer* aChild);
+   template<class Container>
+   friend void ContainerRender(Container* aContainer, LayerManagerD3D9* aManager);
+ 
+ public:
+-  ShadowContainerLayerD3D9(LayerManagerD3D9 *aManager);
++  ShadowContainerLayerD3D9(LayerManagerD3D9 *aManager, LayerID aID);
+   ~ShadowContainerLayerD3D9();
+ 
+   void InsertAfter(Layer* aChild, Layer* aAfter);
+ 
+   void RemoveChild(Layer* aChild);
+ 
+   // LayerD3D9 Implementation
+   virtual Layer* GetLayer() { return this; }
+diff --git a/gfx/layers/d3d9/ImageLayerD3D9.cpp b/gfx/layers/d3d9/ImageLayerD3D9.cpp
+--- a/gfx/layers/d3d9/ImageLayerD3D9.cpp
++++ b/gfx/layers/d3d9/ImageLayerD3D9.cpp
+@@ -512,18 +512,18 @@ ImageLayerD3D9::GetAsTexture(gfxIntSize*
+   
+   bool dontCare;
+   *aSize = image->GetSize();
+   nsRefPtr<IDirect3DTexture9> result = GetTexture(image, dontCare);
+   return result.forget();
+ }
+ 
+ 
+-ShadowImageLayerD3D9::ShadowImageLayerD3D9(LayerManagerD3D9* aManager)
+-  : ShadowImageLayer(aManager, nsnull)
++ShadowImageLayerD3D9::ShadowImageLayerD3D9(LayerManagerD3D9* aManager, LayerID aID)
++  : ShadowImageLayer(aManager, nsnull, aID)
+   , LayerD3D9(aManager)
+ {
+   mImplData = static_cast<LayerD3D9*>(this);
+ }  
+ 
+ ShadowImageLayerD3D9::~ShadowImageLayerD3D9()
+ {}
+ 
+diff --git a/gfx/layers/d3d9/ImageLayerD3D9.h b/gfx/layers/d3d9/ImageLayerD3D9.h
+--- a/gfx/layers/d3d9/ImageLayerD3D9.h
++++ b/gfx/layers/d3d9/ImageLayerD3D9.h
+@@ -55,17 +55,17 @@ struct PlanarYCbCrD3D9BackendData : publ
+   nsRefPtr<IDirect3DTexture9> mCrTexture;
+   nsRefPtr<IDirect3DTexture9> mCbTexture;
+ };
+ 
+ class ShadowImageLayerD3D9 : public ShadowImageLayer,
+                             public LayerD3D9
+ {
+ public:
+-  ShadowImageLayerD3D9(LayerManagerD3D9* aManager);
++  ShadowImageLayerD3D9(LayerManagerD3D9* aManager, LayerID aID);
+   virtual ~ShadowImageLayerD3D9();
+ 
+   // ShadowImageLayer impl
+   virtual void Swap(const SharedImage& aFront,
+                     SharedImage* aNewBack);
+ 
+   virtual void Disconnect();
+ 
+diff --git a/gfx/layers/d3d9/LayerManagerD3D9.cpp b/gfx/layers/d3d9/LayerManagerD3D9.cpp
+--- a/gfx/layers/d3d9/LayerManagerD3D9.cpp
++++ b/gfx/layers/d3d9/LayerManagerD3D9.cpp
+@@ -203,63 +203,63 @@ LayerManagerD3D9::CreateCanvasLayer()
+ already_AddRefed<ReadbackLayer>
+ LayerManagerD3D9::CreateReadbackLayer()
+ {
+   nsRefPtr<ReadbackLayer> layer = new ReadbackLayerD3D9(this);
+   return layer.forget();
+ }
+ 
+ already_AddRefed<ShadowThebesLayer>
+-LayerManagerD3D9::CreateShadowThebesLayer()
++LayerManagerD3D9::CreateShadowThebesLayer(LayerID aID)
+ {
+   if (LayerManagerD3D9::mDestroyed) {
+     NS_WARNING("Call on destroyed layer manager");
+     return nsnull;
+   }
+-  return nsRefPtr<ShadowThebesLayerD3D9>(new ShadowThebesLayerD3D9(this)).forget();
++  return nsRefPtr<ShadowThebesLayerD3D9>(new ShadowThebesLayerD3D9(this, aID)).forget();
+ }
+ 
+ already_AddRefed<ShadowContainerLayer>
+-LayerManagerD3D9::CreateShadowContainerLayer()
++LayerManagerD3D9::CreateShadowContainerLayer(LayerID aID)
+ {
+   if (LayerManagerD3D9::mDestroyed) {
+     NS_WARNING("Call on destroyed layer manager");
+     return nsnull;
+   }
+-  return nsRefPtr<ShadowContainerLayerD3D9>(new ShadowContainerLayerD3D9(this)).forget();
++  return nsRefPtr<ShadowContainerLayerD3D9>(new ShadowContainerLayerD3D9(this, aID)).forget();
+ }
+ 
+ already_AddRefed<ShadowImageLayer>
+-LayerManagerD3D9::CreateShadowImageLayer()
++LayerManagerD3D9::CreateShadowImageLayer(LayerID aID)
+ {
+   if (LayerManagerD3D9::mDestroyed) {
+     NS_WARNING("Call on destroyed layer manager");
+     return nsnull;
+   }
+-  return nsRefPtr<ShadowImageLayerD3D9>(new ShadowImageLayerD3D9(this)).forget();
++  return nsRefPtr<ShadowImageLayerD3D9>(new ShadowImageLayerD3D9(this, aID)).forget();
+ }
+ 
+ already_AddRefed<ShadowColorLayer>
+-LayerManagerD3D9::CreateShadowColorLayer()
++LayerManagerD3D9::CreateShadowColorLayer(LayerID aID)
+ {
+   if (LayerManagerD3D9::mDestroyed) {
+     NS_WARNING("Call on destroyed layer manager");
+     return nsnull;
+   }
+-  return nsRefPtr<ShadowColorLayerD3D9>(new ShadowColorLayerD3D9(this)).forget();
++  return nsRefPtr<ShadowColorLayerD3D9>(new ShadowColorLayerD3D9(this, aID)).forget();
+ }
+ 
+ already_AddRefed<ShadowCanvasLayer>
+-LayerManagerD3D9::CreateShadowCanvasLayer()
++LayerManagerD3D9::CreateShadowCanvasLayer(LayerID aID)
+ {
+   if (LayerManagerD3D9::mDestroyed) {
+     NS_WARNING("Call on destroyed layer manager");
+     return nsnull;
+   }
+-  return nsRefPtr<ShadowCanvasLayerD3D9>(new ShadowCanvasLayerD3D9(this)).forget();
++  return nsRefPtr<ShadowCanvasLayerD3D9>(new ShadowCanvasLayerD3D9(this, aID)).forget();
+ }
+ 
+ void ReleaseTexture(void *texture)
+ {
+   static_cast<IDirect3DTexture9*>(texture)->Release();
+ }
+ 
+ void
+diff --git a/gfx/layers/d3d9/LayerManagerD3D9.h b/gfx/layers/d3d9/LayerManagerD3D9.h
+--- a/gfx/layers/d3d9/LayerManagerD3D9.h
++++ b/gfx/layers/d3d9/LayerManagerD3D9.h
+@@ -133,21 +133,21 @@ public:
+   virtual already_AddRefed<ImageLayer> CreateImageLayer();
+ 
+   virtual already_AddRefed<ColorLayer> CreateColorLayer();
+ 
+   virtual already_AddRefed<CanvasLayer> CreateCanvasLayer();
+ 
+   virtual already_AddRefed<ReadbackLayer> CreateReadbackLayer();
+ 
+-  virtual already_AddRefed<ShadowThebesLayer> CreateShadowThebesLayer();
+-  virtual already_AddRefed<ShadowContainerLayer> CreateShadowContainerLayer();
+-  virtual already_AddRefed<ShadowImageLayer> CreateShadowImageLayer();
+-  virtual already_AddRefed<ShadowColorLayer> CreateShadowColorLayer();
+-  virtual already_AddRefed<ShadowCanvasLayer> CreateShadowCanvasLayer();
++  virtual already_AddRefed<ShadowThebesLayer> CreateShadowThebesLayer(LayerID aID);
++  virtual already_AddRefed<ShadowContainerLayer> CreateShadowContainerLayer(LayerID aID);
++  virtual already_AddRefed<ShadowImageLayer> CreateShadowImageLayer(LayerID aID);
++  virtual already_AddRefed<ShadowColorLayer> CreateShadowColorLayer(LayerID aID);
++  virtual already_AddRefed<ShadowCanvasLayer> CreateShadowCanvasLayer(LayerID aID);
+ 
+   virtual LayersBackend GetBackendType() { return LAYERS_D3D9; }
+   virtual void GetBackendName(nsAString& name) { name.AssignLiteral("Direct3D 9"); }
+   bool DeviceWasRemoved() { return deviceManager()->DeviceWasRemoved(); }
+ 
+   /*
+    * Helper methods.
+    */
+diff --git a/gfx/layers/d3d9/ThebesLayerD3D9.cpp b/gfx/layers/d3d9/ThebesLayerD3D9.cpp
+--- a/gfx/layers/d3d9/ThebesLayerD3D9.cpp
++++ b/gfx/layers/d3d9/ThebesLayerD3D9.cpp
+@@ -589,18 +589,18 @@ ThebesLayerD3D9::CreateNewTextures(const
+     if (FAILED(hr)) {
+       ReportFailure(NS_LITERAL_CSTRING("ThebesLayerD3D9::CreateNewTextures(): Failed to create texture (2)"),
+                     hr);
+       return;
+     }
+   }
+ }
+ 
+-ShadowThebesLayerD3D9::ShadowThebesLayerD3D9(LayerManagerD3D9 *aManager)
+-  : ShadowThebesLayer(aManager, nsnull)
++ShadowThebesLayerD3D9::ShadowThebesLayerD3D9(LayerManagerD3D9 *aManager, LayerID aID)
++  : ShadowThebesLayer(aManager, nsnull, aID)
+   , LayerD3D9(aManager)
+ {
+   mImplData = static_cast<LayerD3D9*>(this);
+ }
+ 
+ ShadowThebesLayerD3D9::~ShadowThebesLayerD3D9()
+ {}
+ 
+diff --git a/gfx/layers/ipc/PLayers.ipdl b/gfx/layers/ipc/PLayers.ipdl
+--- a/gfx/layers/ipc/PLayers.ipdl
++++ b/gfx/layers/ipc/PLayers.ipdl
+@@ -30,21 +30,21 @@ using mozilla::WindowsHandle;
+  * subtree into its own tree), and atomically updating a published
+  * subtree.  ("Atomic" in this sense is wrt painting.)
+  */
+ 
+ namespace mozilla {
+ namespace layers {
+ 
+ // Create a shadow layer for |layer|
+-struct OpCreateThebesLayer     { PLayer layer; };
+-struct OpCreateContainerLayer  { PLayer layer; };
+-struct OpCreateImageLayer      { PLayer layer; };
+-struct OpCreateColorLayer      { PLayer layer; };
+-struct OpCreateCanvasLayer     { PLayer layer; };
++struct OpCreateThebesLayer     { PLayer layer; PRUint64 id; };
++struct OpCreateContainerLayer  { PLayer layer; PRUint64 id; };
++struct OpCreateImageLayer      { PLayer layer; PRUint64 id; };
++struct OpCreateColorLayer      { PLayer layer; PRUint64 id; };
++struct OpCreateCanvasLayer     { PLayer layer; PRUint64 id; };
+ 
+ struct SurfaceDescriptorD3D10 {
+   WindowsHandle handle;
+ };
+ 
+ union SurfaceDescriptor {
+   Shmem;
+   SurfaceDescriptorD3D10;
+diff --git a/gfx/layers/ipc/ShadowLayers.cpp b/gfx/layers/ipc/ShadowLayers.cpp
+--- a/gfx/layers/ipc/ShadowLayers.cpp
++++ b/gfx/layers/ipc/ShadowLayers.cpp
+@@ -133,17 +133,17 @@ Shadow(ShadowableLayer* aLayer)
+ {
+   return aLayer->GetShadow();
+ }
+ 
+ template<typename OpCreateT>
+ static void
+ CreatedLayer(Transaction* aTxn, ShadowableLayer* aLayer)
+ {
+-  aTxn->AddEdit(OpCreateT(NULL, Shadow(aLayer)));
++  aTxn->AddEdit(OpCreateT(NULL, Shadow(aLayer),aLayer->AsLayer()->GetID()));
+ }
+ 
+ void
+ ShadowLayerForwarder::CreatedThebesLayer(ShadowableLayer* aThebes)
+ {
+   CreatedLayer<OpCreateThebesLayer>(mTxn, aThebes);
+ }
+ void
+diff --git a/gfx/layers/ipc/ShadowLayers.h b/gfx/layers/ipc/ShadowLayers.h
+--- a/gfx/layers/ipc/ShadowLayers.h
++++ b/gfx/layers/ipc/ShadowLayers.h
+@@ -344,25 +344,25 @@ public:
+ 
+   void DestroySharedSurface(gfxSharedImageSurface* aSurface,
+                             PLayersParent* aDeallocator);
+ 
+   void DestroySharedSurface(SurfaceDescriptor* aSurface,
+                             PLayersParent* aDeallocator);
+ 
+   /** CONSTRUCTION PHASE ONLY */
+-  virtual already_AddRefed<ShadowThebesLayer> CreateShadowThebesLayer() = 0;
++  virtual already_AddRefed<ShadowThebesLayer> CreateShadowThebesLayer(LayerID aID) = 0;
+   /** CONSTRUCTION PHASE ONLY */
+-  virtual already_AddRefed<ShadowContainerLayer> CreateShadowContainerLayer() = 0;
++  virtual already_AddRefed<ShadowContainerLayer> CreateShadowContainerLayer(LayerID aID) = 0;
+   /** CONSTRUCTION PHASE ONLY */
+-  virtual already_AddRefed<ShadowImageLayer> CreateShadowImageLayer() = 0;
++  virtual already_AddRefed<ShadowImageLayer> CreateShadowImageLayer(LayerID aID) = 0;
+   /** CONSTRUCTION PHASE ONLY */
+-  virtual already_AddRefed<ShadowColorLayer> CreateShadowColorLayer() = 0;
++  virtual already_AddRefed<ShadowColorLayer> CreateShadowColorLayer(LayerID aID) = 0;
+   /** CONSTRUCTION PHASE ONLY */
+-  virtual already_AddRefed<ShadowCanvasLayer> CreateShadowCanvasLayer() = 0;
++  virtual already_AddRefed<ShadowCanvasLayer> CreateShadowCanvasLayer(LayerID aID) = 0;
+ 
+   static void PlatformSyncBeforeReplyUpdate();
+ 
+ protected:
+   ShadowLayerManager() {}
+ 
+   bool PlatformDestroySharedSurface(SurfaceDescriptor* aSurface);
+ };
+@@ -520,34 +520,38 @@ public:
+    */
+   virtual void DestroyFrontBuffer() = 0;
+ 
+   virtual ShadowLayer* AsShadowLayer() { return this; }
+ 
+   MOZ_LAYER_DECL_NAME("ShadowThebesLayer", TYPE_SHADOW)
+ 
+ protected:
+-  ShadowThebesLayer(LayerManager* aManager, void* aImplData)
++  ShadowThebesLayer(LayerManager* aManager, void* aImplData, LayerID aID)
+     : ThebesLayer(aManager, aImplData)
+-  {}
++  {
++    Layer::mID = aID;
++  }
+ };
+ 
+ 
+ class ShadowContainerLayer : public ShadowLayer,
+                              public ContainerLayer
+ {
+ public:
+   virtual ShadowLayer* AsShadowLayer() { return this; }
+ 
+   MOZ_LAYER_DECL_NAME("ShadowContainerLayer", TYPE_SHADOW)
+ 
+ protected:
+-  ShadowContainerLayer(LayerManager* aManager, void* aImplData)
++  ShadowContainerLayer(LayerManager* aManager, void* aImplData, LayerID aID)
+     : ContainerLayer(aManager, aImplData)
+-  {}
++  {
++    Layer::mID = aID;
++  }
+ };
+ 
+ 
+ class ShadowCanvasLayer : public ShadowLayer,
+                           public CanvasLayer
+ {
+ public:
+   /**
+@@ -560,19 +564,21 @@ public:
+   virtual void Swap(const CanvasSurface& aNewFront, bool needYFlip,
+                     CanvasSurface* aNewBack) = 0;
+ 
+   virtual ShadowLayer* AsShadowLayer() { return this; }
+ 
+   MOZ_LAYER_DECL_NAME("ShadowCanvasLayer", TYPE_SHADOW)
+ 
+ protected:
+-  ShadowCanvasLayer(LayerManager* aManager, void* aImplData)
++  ShadowCanvasLayer(LayerManager* aManager, void* aImplData, LayerID aID)
+     : CanvasLayer(aManager, aImplData)
+-  {}
++  {
++    Layer::mID = aID;
++  }
+ };
+ 
+ 
+ class ShadowImageLayer : public ShadowLayer,
+                          public ImageLayer
+ {
+ public:
+   /**
+@@ -582,34 +588,38 @@ public:
+   virtual void Swap(const SharedImage& aFront,
+                     SharedImage* aNewBack) = 0;
+ 
+   virtual ShadowLayer* AsShadowLayer() { return this; }
+ 
+   MOZ_LAYER_DECL_NAME("ShadowImageLayer", TYPE_SHADOW)
+ 
+ protected:
+-  ShadowImageLayer(LayerManager* aManager, void* aImplData)
++  ShadowImageLayer(LayerManager* aManager, void* aImplData, LayerID aID)
+     : ImageLayer(aManager, aImplData)
+-  {}
++  {
++    Layer::mID = aID;
++  }
+ };
+ 
+ 
+ class ShadowColorLayer : public ShadowLayer,
+                          public ColorLayer
+ {
+ public:
+   virtual ShadowLayer* AsShadowLayer() { return this; }
+ 
+   MOZ_LAYER_DECL_NAME("ShadowColorLayer", TYPE_SHADOW)
+ 
+ protected:
+-  ShadowColorLayer(LayerManager* aManager, void* aImplData)
++  ShadowColorLayer(LayerManager* aManager, void* aImplData, LayerID aID)
+     : ColorLayer(aManager, aImplData)
+-  {}
++  {
++    Layer::mID = aID;
++  }
+ };
+ 
+ bool IsSurfaceDescriptorValid(const SurfaceDescriptor& aSurface);
+ 
+ } // namespace layers
+ } // namespace mozilla
+ 
+ #endif // ifndef mozilla_layers_ShadowLayers_h
+diff --git a/gfx/layers/ipc/ShadowLayersParent.cpp b/gfx/layers/ipc/ShadowLayersParent.cpp
+--- a/gfx/layers/ipc/ShadowLayersParent.cpp
++++ b/gfx/layers/ipc/ShadowLayersParent.cpp
+@@ -148,48 +148,50 @@ ShadowLayersParent::RecvUpdate(const Inf
+     const Edit& edit = cset[i];
+ 
+     switch (edit.type()) {
+       // Create* ops
+     case Edit::TOpCreateThebesLayer: {
+       MOZ_LAYERS_LOG(("[ParentSide] CreateThebesLayer"));
+ 
+       nsRefPtr<ShadowThebesLayer> layer =
+-        layer_manager()->CreateShadowThebesLayer();
++        layer_manager()->CreateShadowThebesLayer(edit.get_OpCreateThebesLayer().id());
+       layer->SetAllocator(this);
+       AsShadowLayer(edit.get_OpCreateThebesLayer())->Bind(layer);
+       break;
+     }
+     case Edit::TOpCreateContainerLayer: {
+       MOZ_LAYERS_LOG(("[ParentSide] CreateContainerLayer"));
+ 
+-      nsRefPtr<ContainerLayer> layer = layer_manager()->CreateShadowContainerLayer();
++      nsRefPtr<ContainerLayer> layer = 
++        layer_manager()->CreateShadowContainerLayer(edit.get_OpCreateContainerLayer().id());
+       AsShadowLayer(edit.get_OpCreateContainerLayer())->Bind(layer);
+       break;
+     }
+     case Edit::TOpCreateImageLayer: {
+       MOZ_LAYERS_LOG(("[ParentSide] CreateImageLayer"));
+ 
+       nsRefPtr<ShadowImageLayer> layer =
+-        layer_manager()->CreateShadowImageLayer();
++        layer_manager()->CreateShadowImageLayer(edit.get_OpCreateImageLayer().id());
+       AsShadowLayer(edit.get_OpCreateImageLayer())->Bind(layer);
+       break;
+     }
+     case Edit::TOpCreateColorLayer: {
+       MOZ_LAYERS_LOG(("[ParentSide] CreateColorLayer"));
+ 
+-      nsRefPtr<ShadowColorLayer> layer = layer_manager()->CreateShadowColorLayer();
++      nsRefPtr<ShadowColorLayer> layer = 
++        layer_manager()->CreateShadowColorLayer(edit.get_OpCreateColorLayer().id());
+       AsShadowLayer(edit.get_OpCreateColorLayer())->Bind(layer);
+       break;
+     }
+     case Edit::TOpCreateCanvasLayer: {
+       MOZ_LAYERS_LOG(("[ParentSide] CreateCanvasLayer"));
+ 
+       nsRefPtr<ShadowCanvasLayer> layer = 
+-        layer_manager()->CreateShadowCanvasLayer();
++        layer_manager()->CreateShadowCanvasLayer(edit.get_OpCreateCanvasLayer().id());
+       layer->SetAllocator(this);
+       AsShadowLayer(edit.get_OpCreateCanvasLayer())->Bind(layer);
+       break;
+     }
+ 
+       // Attributes
+     case Edit::TOpSetLayerAttributes: {
+       MOZ_LAYERS_LOG(("[ParentSide] SetLayerAttributes"));
+diff --git a/gfx/layers/opengl/CanvasLayerOGL.cpp b/gfx/layers/opengl/CanvasLayerOGL.cpp
+--- a/gfx/layers/opengl/CanvasLayerOGL.cpp
++++ b/gfx/layers/opengl/CanvasLayerOGL.cpp
+@@ -280,18 +280,18 @@ CanvasLayerOGL::CleanupResources()
+ {
+   if (mTexture) {
+     gl()->MakeCurrent();
+     gl()->fDeleteTextures(1, &mTexture);
+   }
+ }
+ 
+ 
+-ShadowCanvasLayerOGL::ShadowCanvasLayerOGL(LayerManagerOGL* aManager)
+-  : ShadowCanvasLayer(aManager, nsnull)
++ShadowCanvasLayerOGL::ShadowCanvasLayerOGL(LayerManagerOGL* aManager, LayerID aID)
++  : ShadowCanvasLayer(aManager, nsnull, aID)
+   , LayerOGL(aManager)
+   , mNeedsYFlip(false)
+ {
+   mImplData = static_cast<LayerOGL*>(this);
+ }
+  
+ ShadowCanvasLayerOGL::~ShadowCanvasLayerOGL()
+ {}
+diff --git a/gfx/layers/opengl/CanvasLayerOGL.h b/gfx/layers/opengl/CanvasLayerOGL.h
+--- a/gfx/layers/opengl/CanvasLayerOGL.h
++++ b/gfx/layers/opengl/CanvasLayerOGL.h
+@@ -92,17 +92,17 @@ protected:
+ // canvas3d layers, but currently they look the same from the
+ // perspective of the compositor process
+ class ShadowCanvasLayerOGL : public ShadowCanvasLayer,
+                              public LayerOGL
+ {
+   typedef gl::TextureImage TextureImage;
+ 
+ public:
+-  ShadowCanvasLayerOGL(LayerManagerOGL* aManager);
++  ShadowCanvasLayerOGL(LayerManagerOGL* aManager, LayerID aID);
+   virtual ~ShadowCanvasLayerOGL();
+ 
+   // CanvasLayer impl
+   virtual void Initialize(const Data& aData);
+   virtual void Init(const CanvasSurface& aNewFront, bool needYFlip);
+ 
+   // This isn't meaningful for shadow canvas.
+   virtual void Updated(const nsIntRect&) {}
+diff --git a/gfx/layers/opengl/ColorLayerOGL.h b/gfx/layers/opengl/ColorLayerOGL.h
+--- a/gfx/layers/opengl/ColorLayerOGL.h
++++ b/gfx/layers/opengl/ColorLayerOGL.h
+@@ -35,18 +35,18 @@ public:
+                            const nsIntPoint& aOffset);
+   virtual void CleanupResources() {};
+ };
+ 
+ class ShadowColorLayerOGL : public ShadowColorLayer,
+                             public LayerOGL
+ {
+ public:
+-  ShadowColorLayerOGL(LayerManagerOGL *aManager)
+-    : ShadowColorLayer(aManager, NULL)
++  ShadowColorLayerOGL(LayerManagerOGL *aManager, LayerID aID)
++    : ShadowColorLayer(aManager, NULL, aID)
+     , LayerOGL(aManager)
+   { 
+     mImplData = static_cast<LayerOGL*>(this);
+   }
+   ~ShadowColorLayerOGL() { Destroy(); }
+ 
+   // LayerOGL Implementation
+   virtual Layer* GetLayer() { return this; }
+diff --git a/gfx/layers/opengl/ContainerLayerOGL.cpp b/gfx/layers/opengl/ContainerLayerOGL.cpp
+--- a/gfx/layers/opengl/ContainerLayerOGL.cpp
++++ b/gfx/layers/opengl/ContainerLayerOGL.cpp
+@@ -330,18 +330,18 @@ ContainerLayerOGL::RenderLayer(int aPrev
+ }
+ 
+ void
+ ContainerLayerOGL::CleanupResources()
+ {
+   ContainerCleanupResources(this);
+ }
+ 
+-ShadowContainerLayerOGL::ShadowContainerLayerOGL(LayerManagerOGL *aManager)
+-  : ShadowContainerLayer(aManager, NULL)
++ShadowContainerLayerOGL::ShadowContainerLayerOGL(LayerManagerOGL *aManager, LayerID aID)
++  : ShadowContainerLayer(aManager, NULL, aID)
+   , LayerOGL(aManager)
+ {
+   mImplData = static_cast<LayerOGL*>(this);
+ }
+  
+ ShadowContainerLayerOGL::~ShadowContainerLayerOGL()
+ {
+   Destroy();
+diff --git a/gfx/layers/opengl/ContainerLayerOGL.h b/gfx/layers/opengl/ContainerLayerOGL.h
+--- a/gfx/layers/opengl/ContainerLayerOGL.h
++++ b/gfx/layers/opengl/ContainerLayerOGL.h
+@@ -79,17 +79,17 @@ class ShadowContainerLayerOGL : public S
+   friend void ContainerDestroy(Container* aContainer);
+   template<class Container>
+   friend void ContainerRender(Container* aContainer,
+                               int aPreviousFrameBuffer,
+                               const nsIntPoint& aOffset,
+                               LayerManagerOGL* aManager);
+ 
+ public:
+-  ShadowContainerLayerOGL(LayerManagerOGL *aManager);
++  ShadowContainerLayerOGL(LayerManagerOGL *aManager, LayerID aID);
+   ~ShadowContainerLayerOGL();
+ 
+   void InsertAfter(Layer* aChild, Layer* aAfter);
+ 
+   void RemoveChild(Layer* aChild);
+ 
+   // LayerOGL Implementation
+   virtual Layer* GetLayer() { return this; }
+diff --git a/gfx/layers/opengl/ImageLayerOGL.cpp b/gfx/layers/opengl/ImageLayerOGL.cpp
+--- a/gfx/layers/opengl/ImageLayerOGL.cpp
++++ b/gfx/layers/opengl/ImageLayerOGL.cpp
+@@ -635,18 +635,18 @@ ImageLayerOGL::LoadAsTexture(GLuint aTex
+     gl()->fActiveTexture(aTextureUnit);
+     gl()->fBindTexture(LOCAL_GL_TEXTURE_2D, data->mTexture.GetTextureID());
+   }
+ 
+   *aSize = data->mTextureSize;
+   return true;
+ }
+ 
+-ShadowImageLayerOGL::ShadowImageLayerOGL(LayerManagerOGL* aManager)
+-  : ShadowImageLayer(aManager, nsnull)
++ShadowImageLayerOGL::ShadowImageLayerOGL(LayerManagerOGL* aManager, LayerID aID)
++  : ShadowImageLayer(aManager, nsnull, aID)
+   , LayerOGL(aManager)
+ {
+   mImplData = static_cast<LayerOGL*>(this);
+ }
+ 
+ ShadowImageLayerOGL::~ShadowImageLayerOGL()
+ {}
+ 
+diff --git a/gfx/layers/opengl/ImageLayerOGL.h b/gfx/layers/opengl/ImageLayerOGL.h
+--- a/gfx/layers/opengl/ImageLayerOGL.h
++++ b/gfx/layers/opengl/ImageLayerOGL.h
+@@ -149,17 +149,17 @@ struct CairoOGLBackendData : public Imag
+ };
+ 
+ class ShadowImageLayerOGL : public ShadowImageLayer,
+                             public LayerOGL
+ {
+   typedef gl::TextureImage TextureImage;
+ 
+ public:
+-  ShadowImageLayerOGL(LayerManagerOGL* aManager);
++  ShadowImageLayerOGL(LayerManagerOGL* aManager, LayerID aID);
+   virtual ~ShadowImageLayerOGL();
+ 
+   // ShadowImageLayer impl
+   virtual void Swap(const SharedImage& aFront,
+                     SharedImage* aNewBack);
+ 
+   virtual void Disconnect();
+ 
+diff --git a/gfx/layers/opengl/LayerManagerOGL.cpp b/gfx/layers/opengl/LayerManagerOGL.cpp
+--- a/gfx/layers/opengl/LayerManagerOGL.cpp
++++ b/gfx/layers/opengl/LayerManagerOGL.cpp
+@@ -1181,63 +1181,63 @@ LayerManagerOGL::CreateFBOWithTexture(co
+     mGLContext->fClear(LOCAL_GL_COLOR_BUFFER_BIT);
+   }
+ 
+   *aFBO = fbo;
+   *aTexture = tex;
+ }
+ 
+ already_AddRefed<ShadowThebesLayer>
+-LayerManagerOGL::CreateShadowThebesLayer()
++LayerManagerOGL::CreateShadowThebesLayer(LayerID aID)
+ {
+   if (LayerManagerOGL::mDestroyed) {
+     NS_WARNING("Call on destroyed layer manager");
+     return nsnull;
+   }
+ #ifdef FORCE_BASICTILEDTHEBESLAYER
+-  return nsRefPtr<ShadowThebesLayer>(new TiledThebesLayerOGL(this)).forget();
++  return nsRefPtr<ShadowThebesLayer>(new TiledThebesLayerOGL(this, aID)).forget();
+ #else
+-  return nsRefPtr<ShadowThebesLayerOGL>(new ShadowThebesLayerOGL(this)).forget();
++  return nsRefPtr<ShadowThebesLayerOGL>(new ShadowThebesLayerOGL(this, aID)).forget();
+ #endif
+ }
+ 
+ already_AddRefed<ShadowContainerLayer>
+-LayerManagerOGL::CreateShadowContainerLayer()
++LayerManagerOGL::CreateShadowContainerLayer(LayerID aID)
+ {
+   if (LayerManagerOGL::mDestroyed) {
+     NS_WARNING("Call on destroyed layer manager");
+     return nsnull;
+   }
+-  return nsRefPtr<ShadowContainerLayerOGL>(new ShadowContainerLayerOGL(this)).forget();
++  return nsRefPtr<ShadowContainerLayerOGL>(new ShadowContainerLayerOGL(this, aID)).forget();
+ }
+ 
+ already_AddRefed<ShadowImageLayer>
+-LayerManagerOGL::CreateShadowImageLayer()
++LayerManagerOGL::CreateShadowImageLayer(LayerID aID)
+ {
+   if (LayerManagerOGL::mDestroyed) {
+     NS_WARNING("Call on destroyed layer manager");
+     return nsnull;
+   }
+-  return nsRefPtr<ShadowImageLayerOGL>(new ShadowImageLayerOGL(this)).forget();
++  return nsRefPtr<ShadowImageLayerOGL>(new ShadowImageLayerOGL(this, aID)).forget();
+ }
+ 
+ already_AddRefed<ShadowColorLayer>
+-LayerManagerOGL::CreateShadowColorLayer()
++LayerManagerOGL::CreateShadowColorLayer(LayerID aID)
+ {
+   if (LayerManagerOGL::mDestroyed) {
+     NS_WARNING("Call on destroyed layer manager");
+     return nsnull;
+   }
+-  return nsRefPtr<ShadowColorLayerOGL>(new ShadowColorLayerOGL(this)).forget();
++  return nsRefPtr<ShadowColorLayerOGL>(new ShadowColorLayerOGL(this, aID)).forget();
+ }
+ 
+ already_AddRefed<ShadowCanvasLayer>
+-LayerManagerOGL::CreateShadowCanvasLayer()
++LayerManagerOGL::CreateShadowCanvasLayer(LayerID aID)
+ {
+   if (LayerManagerOGL::mDestroyed) {
+     NS_WARNING("Call on destroyed layer manager");
+     return nsnull;
+   }
+-  return nsRefPtr<ShadowCanvasLayerOGL>(new ShadowCanvasLayerOGL(this)).forget();
++  return nsRefPtr<ShadowCanvasLayerOGL>(new ShadowCanvasLayerOGL(this, aID)).forget();
+ }
+ 
+ } /* layers */
+ } /* mozilla */
+diff --git a/gfx/layers/opengl/LayerManagerOGL.h b/gfx/layers/opengl/LayerManagerOGL.h
+--- a/gfx/layers/opengl/LayerManagerOGL.h
++++ b/gfx/layers/opengl/LayerManagerOGL.h
+@@ -128,21 +128,21 @@ public:
+   virtual already_AddRefed<ContainerLayer> CreateContainerLayer();
+ 
+   virtual already_AddRefed<ImageLayer> CreateImageLayer();
+ 
+   virtual already_AddRefed<ColorLayer> CreateColorLayer();
+ 
+   virtual already_AddRefed<CanvasLayer> CreateCanvasLayer();
+ 
+-  virtual already_AddRefed<ShadowThebesLayer> CreateShadowThebesLayer();
+-  virtual already_AddRefed<ShadowContainerLayer> CreateShadowContainerLayer();
+-  virtual already_AddRefed<ShadowImageLayer> CreateShadowImageLayer();
+-  virtual already_AddRefed<ShadowColorLayer> CreateShadowColorLayer();
+-  virtual already_AddRefed<ShadowCanvasLayer> CreateShadowCanvasLayer();
++  virtual already_AddRefed<ShadowThebesLayer> CreateShadowThebesLayer(LayerID aID);
++  virtual already_AddRefed<ShadowContainerLayer> CreateShadowContainerLayer(LayerID aID);
++  virtual already_AddRefed<ShadowImageLayer> CreateShadowImageLayer(LayerID aID);
++  virtual already_AddRefed<ShadowColorLayer> CreateShadowColorLayer(LayerID aID);
++  virtual already_AddRefed<ShadowCanvasLayer> CreateShadowCanvasLayer(LayerID aID);
+ 
+   virtual LayersBackend GetBackendType() { return LAYERS_OPENGL; }
+   virtual void GetBackendName(nsAString& name) { name.AssignLiteral("OpenGL"); }
+ 
+   /**
+    * Helper methods.
+    */
+   void MakeCurrent(bool aForce = false) {
+diff --git a/gfx/layers/opengl/ThebesLayerOGL.cpp b/gfx/layers/opengl/ThebesLayerOGL.cpp
+--- a/gfx/layers/opengl/ThebesLayerOGL.cpp
++++ b/gfx/layers/opengl/ThebesLayerOGL.cpp
+@@ -948,18 +948,18 @@ ShadowBufferOGL::Upload(gfxASurface* aUp
+     DirectUpdate(aUpdate, destRegion);
+     aPendingUploadRegion.Sub(aPendingUploadRegion, destRegion);
+   }
+ 
+   mBufferRect = aRect;
+   mBufferRotation = aRotation;
+ }
+ 
+-ShadowThebesLayerOGL::ShadowThebesLayerOGL(LayerManagerOGL *aManager)
+-  : ShadowThebesLayer(aManager, nsnull)
++ShadowThebesLayerOGL::ShadowThebesLayerOGL(LayerManagerOGL *aManager, LayerID aID)
++  : ShadowThebesLayer(aManager, nsnull, aID)
+   , LayerOGL(aManager)
+   , mUploadTask(nsnull)
+ {
+ #ifdef FORCE_BASICTILEDTHEBESLAYER
+   NS_ABORT();
+ #endif
+   mImplData = static_cast<LayerOGL*>(this);
+ }
+diff --git a/gfx/layers/opengl/ThebesLayerOGL.h b/gfx/layers/opengl/ThebesLayerOGL.h
+--- a/gfx/layers/opengl/ThebesLayerOGL.h
++++ b/gfx/layers/opengl/ThebesLayerOGL.h
+@@ -109,17 +109,17 @@ protected:
+   nsIntRect mBufferRect;
+   nsIntPoint mBufferRotation;
+ };
+ 
+ class ShadowThebesLayerOGL : public ShadowThebesLayer,
+                              public LayerOGL
+ {
+ public:
+-  ShadowThebesLayerOGL(LayerManagerOGL *aManager);
++  ShadowThebesLayerOGL(LayerManagerOGL *aManager, LayerID aID);
+   virtual ~ShadowThebesLayerOGL();
+ 
+   virtual bool ShouldDoubleBuffer();
+   virtual void
+   Swap(const ThebesBuffer& aNewFront, const nsIntRegion& aUpdatedRegion,
+        OptionalThebesBuffer* aNewBack, nsIntRegion* aNewBackValidRegion,
+        OptionalThebesBuffer* aReadOnlyFront, nsIntRegion* aFrontUpdatedRegion);
+   virtual void EnsureTextureUpdated();
+diff --git a/gfx/layers/opengl/TiledThebesLayerOGL.cpp b/gfx/layers/opengl/TiledThebesLayerOGL.cpp
+--- a/gfx/layers/opengl/TiledThebesLayerOGL.cpp
++++ b/gfx/layers/opengl/TiledThebesLayerOGL.cpp
+@@ -106,18 +106,18 @@ TiledLayerBufferOGL::ValidateTile(TiledT
+ #ifdef GFX_TILEDLAYER_PREF_WARNINGS
+   if (PR_IntervalNow() - start > 1) {
+     printf_stderr("Tile Time to upload %i\n", PR_IntervalNow() - start);
+   }
+ #endif
+   return aTile;
+ }
+ 
+-TiledThebesLayerOGL::TiledThebesLayerOGL(LayerManagerOGL *aManager)
+-  : ShadowThebesLayer(aManager, nsnull)
++TiledThebesLayerOGL::TiledThebesLayerOGL(LayerManagerOGL *aManager, LayerID aID)
++  : ShadowThebesLayer(aManager, nsnull, aID)
+   , LayerOGL(aManager)
+   , mVideoMemoryTiledBuffer(aManager->gl())
+ {
+   mImplData = static_cast<LayerOGL*>(this);
+   // XXX Add a pref for reusable tile store size
+   mReusableTileStore = new ReusableTileStoreOGL(aManager->gl(), 1);
+ }
+ 
+diff --git a/gfx/layers/opengl/TiledThebesLayerOGL.h b/gfx/layers/opengl/TiledThebesLayerOGL.h
+--- a/gfx/layers/opengl/TiledThebesLayerOGL.h
++++ b/gfx/layers/opengl/TiledThebesLayerOGL.h
+@@ -103,17 +103,17 @@ private:
+                                       GLenum& aOutType);
+ };
+ 
+ class TiledThebesLayerOGL : public ShadowThebesLayer,
+                             public LayerOGL,
+                             public TiledLayerComposer
+ {
+ public:
+-  TiledThebesLayerOGL(LayerManagerOGL *aManager);
++  TiledThebesLayerOGL(LayerManagerOGL *aManager, LayerID aID);
+   virtual ~TiledThebesLayerOGL();
+ 
+   // LayerOGL impl
+   void Destroy() {}
+   Layer* GetLayer() { return this; }
+   virtual void RenderLayer(int aPreviousFrameBuffer,
+                            const nsIntPoint& aOffset);
+   virtual void CleanupResources() { }
