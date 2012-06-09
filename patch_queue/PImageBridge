@@ -1,28 +1,6 @@
 # HG changeset patch
 # Parent afc6e7a543f274890574ba897ad51cada286dcc4
 
-diff --git a/content/media/VideoFrameContainer.cpp b/content/media/VideoFrameContainer.cpp
---- a/content/media/VideoFrameContainer.cpp
-+++ b/content/media/VideoFrameContainer.cpp
-@@ -27,16 +27,18 @@ void VideoFrameContainer::SetCurrentFram
-   }
- 
-   gfxIntSize oldFrameSize = mImageContainer->GetCurrentSize();
-   TimeStamp lastPaintTime = mImageContainer->GetPaintTime();
-   if (!lastPaintTime.IsNull() && !mPaintTarget.IsNull()) {
-     mPaintDelay = lastPaintTime - mPaintTarget;
-   }
-   mImageContainer->SetCurrentImage(aImage);
-+  mImageContainer->SetCurrentImageAsync(aImage);
-+
-   gfxIntSize newFrameSize = mImageContainer->GetCurrentSize();
-   if (oldFrameSize != newFrameSize) {
-     mImageSizeChanged = true;
-   }
- 
-   mPaintTarget = aTargetTime;
- }
- 
 diff --git a/gfx/layers/ImageLayers.cpp b/gfx/layers/ImageLayers.cpp
 --- a/gfx/layers/ImageLayers.cpp
 +++ b/gfx/layers/ImageLayers.cpp
@@ -46,7 +24,7 @@ diff --git a/gfx/layers/ImageLayers.cpp b/gfx/layers/ImageLayers.cpp
  #ifdef XP_WIN
  #include "gfxD2DSurface.h"
  #include "gfxWindowsPlatform.h"
-@@ -106,16 +108,24 @@ ImageContainer::SetCurrentImage(Image *a
+@@ -106,16 +108,25 @@ ImageContainer::SetCurrentImage(Image *a
    mActiveImage = aImage;
    CurrentImageChanged();
  
@@ -59,7 +37,8 @@ diff --git a/gfx/layers/ImageLayers.cpp b/gfx/layers/ImageLayers.cpp
 +ImageContainer::SetCurrentImageAsync(Image * aImage)
 +{
 +  if (!mImageContainerChild) return;
-+  mActiveImage = aImage;
++  // TODO do we need to actually keep a ref to the image ?
++  // inthis case maybe we need a lock here also (if we do need to keep a reference)
 +  mImageContainerChild->SendImageAsync(aImage);  
 +}
 +
@@ -339,6 +318,25 @@ diff --git a/gfx/layers/ipc/CompositorParent.cpp b/gfx/layers/ipc/CompositorPare
 diff --git a/gfx/layers/ipc/CompositorParent.h b/gfx/layers/ipc/CompositorParent.h
 --- a/gfx/layers/ipc/CompositorParent.h
 +++ b/gfx/layers/ipc/CompositorParent.h
+@@ -23,17 +23,17 @@
+ 
+ class nsIWidget;
+ 
+ namespace mozilla {
+ namespace layers {
+ 
+ class LayerManager;
+ 
+-// Represents (affine) transforms that are calculated from a content view.
++// Represents (affine) transforms thapt are calculated from a content view.
+ struct ViewTransform {
+   ViewTransform(nsIntPoint aTranslation = nsIntPoint(0, 0), float aXScale = 1, float aYScale = 1)
+     : mTranslation(aTranslation)
+     , mXScale(aXScale)
+     , mYScale(aYScale)
+   {}
+ 
+   operator gfx3DMatrix() const
 @@ -72,36 +72,38 @@ public:
    void SetTransformation(float aScale, nsIntPoint aScrollOffset);
    void AsyncRender();
@@ -384,7 +382,7 @@ diff --git a/gfx/layers/ipc/ImageBridgeChild.cpp b/gfx/layers/ipc/ImageBridgeChi
 new file mode 100644
 --- /dev/null
 +++ b/gfx/layers/ipc/ImageBridgeChild.cpp
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,92 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -437,6 +435,10 @@ new file mode 100644
 +
 +
 +
++MessageLoop * ImageBridgeChild::GetMessageLoop() const
++{
++  return mThread->message_loop();
++}
 +
 +
 +// async opertations:
@@ -467,7 +469,7 @@ new file mode 100644
 +void ImageBridgeChild::ConnectAsync(ImageBridgeParent* aParent)
 +{
 +  Task * t = new ImageBridgeConnectionTask(this, aParent);
-+  GetThread()->message_loop()->PostTask(FROM_HERE, t);
++  GetMessageLoop()->PostTask(FROM_HERE, t);
 +}
 +
 +
@@ -568,7 +570,7 @@ diff --git a/gfx/layers/ipc/ImageBridgeParent.cpp b/gfx/layers/ipc/ImageBridgePa
 new file mode 100644
 --- /dev/null
 +++ b/gfx/layers/ipc/ImageBridgeParent.cpp
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,136 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -579,6 +581,7 @@ new file mode 100644
 +#include "mozilla/layers/CompositorParent.h"
 +
 +#include "base/thread.h"
++#include "mozilla/LinkedList.h"
 +
 +namespace mozilla {
 +namespace layers {
@@ -647,6 +650,59 @@ new file mode 100644
 +  return false;
 +}
 +
++namespace {
++
++  class SharedImageMapElt : public LinkedListElement<SharedImageMapElt>
++  {
++  public:
++    SharedImageMapElt(PRUint64 aHandle, SharedImage* aImage)
++    : handle(aHandle), image(aImage) {}
++
++    PRUint64 handle;
++    SharedImage* image;
++  };
++
++  LinkedList<SharedImageMapElt> sSharedImages;
++
++  SharedImageMapElt* _GetElement(PRUint64 id)
++  {
++    SharedImageMapElt* it = sSharedImages.getFirst();
++    while (it != nsnull) {
++      if (it->handle == id) {
++        return it;
++      }
++      it = it->getNext();
++    }
++    return nsnull;
++  }
++
++}
++
++
++bool ImageBridgeParent::AddSharedImage(PRUint64 aID, SharedImage* aImage)
++{
++  if (_GetElement(aID)) return false;
++
++  sSharedImages.insertFront(new SharedImageMapElt(aID, aImage));
++  return true;
++}
++
++SharedImage* ImageBridgeParent::removeSharedImage(PRUint64 aID) 
++{
++  SharedImageMapElt* elt = _GetElement(aID);
++  if (elt) {
++    elt->remove();
++  } 
++  return nsnull;
++}
++
++SharedImage* ImageBridgeParent::GetSharedImage(PRUint64 aID)
++{
++  SharedImageMapElt* elt = _GetElement(aID);
++  if (elt) return elt->image;
++  return nsnull;
++}
++
 +
 +
 +} // layers
@@ -656,7 +712,7 @@ diff --git a/gfx/layers/ipc/ImageBridgeParent.h b/gfx/layers/ipc/ImageBridgePare
 new file mode 100644
 --- /dev/null
 +++ b/gfx/layers/ipc/ImageBridgeParent.h
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,61 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -675,13 +731,17 @@ new file mode 100644
 +
 +class ImageBridgeChild;
 +class CompositorParent;
++class SharedImage;
++class Handle;
++class ImageHandle;
++
++SharedImage* GetSharedImageData(ImageHandle aHandle);
 +
 +class ImageBridgeParent : public PImageBridgeParent
 +{
 +// NS_INLINE_DECL_THREADSAFE_REFCOUNTING(VideoBridgeChild)
 +public:
 +  typedef PRInt32 CompositorID_t;
-+  typedef MediaSharedImage SharedImage;
 +  // IPDL protocol
 +
 +  ImageBridgeParent(CompositorParent* aCompositor);
@@ -698,8 +758,16 @@ new file mode 100644
 +
 +  MessageLoop * GetMessageLoop();
 +  
-+private:
 +
++  // temporarily duplicated function because we cant share 
++  // strcutures between protcols yet
++  static SharedImage* GetSharedImage(PRUint64 aID);
++
++protected:
++  static bool AddSharedImage(PRUint64 aID, SharedImage* aImage);
++  SharedImage* removeSharedImage(PRUint64 aID);
++
++private:
 +  // TODO: a list of ShadowImageLayers here
 +  CompositorParent * mCompositorParent;
 +};
@@ -711,7 +779,7 @@ diff --git a/gfx/layers/ipc/ImageContainerChild.cpp b/gfx/layers/ipc/ImageContai
 new file mode 100644
 --- /dev/null
 +++ b/gfx/layers/ipc/ImageContainerChild.cpp
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,151 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -729,9 +797,12 @@ new file mode 100644
 +static int _debug_sharedAllocCount = 0;
 +static int _fake_layerID = 0;
 +
++ImageContainerChild::~ImageContainerChild()
++{
 +
++}
 +
-+bool RecvReleasedSharedImage(const MediaSharedImage& aImage)
++bool ImageContainerChild::RecvReleasedSharedImage(const MediaSharedImage& aImage)
 +{
 +  // TODO
 +  return false;
@@ -823,7 +894,7 @@ new file mode 100644
 +                                             tempBufferV->GetShmem(),
 +                                             data->GetPictureRect())));
 +  } else {
-+    NS_RUNTIMEABORT("Only YUVImage is supported here right now");
++    NS_RUNTIMEABORT("Only YUVImage is supported here right now.");
 +  }
 +  return nsnull;
 +}
@@ -850,6 +921,13 @@ new file mode 100644
 +  Image * mImage;
 +};
 +
++void ImageContainerChild::SendImageAsync(Image* aImage)
++{
++  Task * t = new ImageBridgeCopyAndSendTask(this, aImage);
++  GetMessageLoop()->PostTask(FROM_HERE, t);
++}
++
++
 +
 +} // namespace
 +} // namespace
@@ -858,7 +936,7 @@ diff --git a/gfx/layers/ipc/ImageContainerChild.h b/gfx/layers/ipc/ImageContaine
 new file mode 100644
 --- /dev/null
 +++ b/gfx/layers/ipc/ImageContainerChild.h
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,82 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -883,11 +961,16 @@ new file mode 100644
 +  ImageContainerChild(ImageBridgeChild* aBridge, PRUint64 aHandle)
 +  : mBridge(aBridge), mHandle(aHandle) {}
 +
++  virtual ~ImageContainerChild();
++
 +  typedef MediaSharedImage SharedImage;
 +  typedef MediaSurfaceDescriptor SurfaceDescriptor;
 +  typedef MediaYUVImage YUVImage;
 +
 +  void SendImageAsync(Image* aImage);
++
++  MediaSharedImage * CopyImageIntoSharedImage(Image* aImage);
++
 +
 +  inline ImageBridgeChild* GetImageBridgeChild() const {
 +    return mBridge; 
@@ -923,8 +1006,6 @@ new file mode 100644
 +                        MediaSharedImage& aImage);
 +
 +  void DestroySharedImage(MediaSharedImage& aSurface);
-+
-+  MediaSharedImage * CopyImageIntoSharedImage(Image* aImage);
 +
 +private:
 +
@@ -1394,45 +1475,6 @@ diff --git a/gfx/layers/opengl/ImageLayerOGL.cpp b/gfx/layers/opengl/ImageLayerO
        if (mSize != size || !mTexImage ||
            mTexImage->GetContentType() != surf->GetContentType()) {
          Init(aNewFront);
-diff --git a/gfx/layers/opengl/ImageLayerOGL.h b/gfx/layers/opengl/ImageLayerOGL.h
---- a/gfx/layers/opengl/ImageLayerOGL.h
-+++ b/gfx/layers/opengl/ImageLayerOGL.h
-@@ -156,31 +156,35 @@ class ShadowImageLayerOGL : public Shado
- public:
-   ShadowImageLayerOGL(LayerManagerOGL* aManager);
-   virtual ~ShadowImageLayerOGL();
- 
-   // ShadowImageLayer impl
-   virtual void Swap(const SharedImage& aFront,
-                     SharedImage* aNewBack);
- 
-+  virtual void _hacked_Swap(const MediaSharedImage& aFront);
-+
-+
-   virtual void Disconnect();
- 
-   // LayerOGL impl
-   virtual void Destroy();
-   virtual bool LoadAsTexture(GLuint aTextureUnit, gfxIntSize* aSize);
- 
-   virtual Layer* GetLayer();
- 
-   virtual void RenderLayer(int aPreviousFrameBuffer,
-                            const nsIntPoint& aOffset);
- 
-   virtual void CleanupResources();
- 
- private:
-   bool Init(const SharedImage& aFront);
-+  bool _hack_Init(const MediaSharedImage& aFront);
- 
-   nsRefPtr<TextureImage> mTexImage;
-   GLTexture mYUVTexture[3];
-   gfxIntSize mSize;
-   gfxIntSize mCbCrSize;
-   nsIntRect mPictureRect;
- };
- 
 diff --git a/gfx/layers/opengl/LayerManagerOGL.cpp b/gfx/layers/opengl/LayerManagerOGL.cpp
 --- a/gfx/layers/opengl/LayerManagerOGL.cpp
 +++ b/gfx/layers/opengl/LayerManagerOGL.cpp
@@ -1457,26 +1499,7 @@ diff --git a/gfx/layers/opengl/LayerManagerOGL.cpp b/gfx/layers/opengl/LayerMana
 diff --git a/layout/generic/nsVideoFrame.cpp b/layout/generic/nsVideoFrame.cpp
 --- a/layout/generic/nsVideoFrame.cpp
 +++ b/layout/generic/nsVideoFrame.cpp
-@@ -1,16 +1,18 @@
- /* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
- /* vim:set ts=2 sw=2 sts=2 et cindent: */
- /* This Source Code Form is subject to the terms of the Mozilla Public
-  * License, v. 2.0. If a copy of the MPL was not distributed with this
-  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
- 
- /* rendering object for the HTML <video> element */
- 
-+#include "mozilla/layers/ImageBridgeChild.h"
-+
- #include "nsHTMLParts.h"
- #include "nsCOMPtr.h"
- #include "nsIServiceManager.h"
- #include "nsGkAtoms.h"
- 
- #include "nsVideoFrame.h"
- #include "nsHTMLVideoElement.h"
- #include "nsIDOMHTMLVideoElement.h"
-@@ -22,16 +24,17 @@
+@@ -22,16 +22,17 @@
  #include "nsTransform2D.h"
  #include "nsContentCreatorFunctions.h"
  #include "nsBoxLayoutState.h"
@@ -1494,31 +1517,7 @@ diff --git a/layout/generic/nsVideoFrame.cpp b/layout/generic/nsVideoFrame.cpp
  using namespace mozilla;
  using namespace mozilla::layers;
  using namespace mozilla::dom;
-@@ -162,16 +165,23 @@ nsVideoFrame::BuildLayer(nsDisplayListBu
-   nsIntSize videoSize;
-   if (NS_FAILED(element->GetVideoSize(&videoSize)) || area.IsEmpty()) {
-     return nsnull;
-   }
- 
-   nsRefPtr<ImageContainer> container = element->GetImageContainer();
-   if (!container)
-     return nsnull;
-+
-+  // TODO this is most likely not the right place to do this
-+  // if omtc
-+  if (aManager->AsShadowForwarder() && aManager->AsShadowForwarder()->HasShadowManager()) {
-+    ImageBridgeChild* bridge = aManager->AsShadowForwarder()->GetImageBridge();
-+    bridge->AddImageContainerAsync(*container.get());
-+  }
-   
-   // Retrieve the size of the decoded video frame, before being scaled
-   // by pixel aspect ratio.
-   gfxIntSize frameSize = container->GetCurrentSize();
-   if (frameSize.width == 0 || frameSize.height == 0) {
-     // No image, or zero-sized image. No point creating a layer.
-     return nsnull;
-   }
-@@ -192,17 +202,18 @@ nsVideoFrame::BuildLayer(nsDisplayListBu
+@@ -192,18 +193,17 @@ nsVideoFrame::BuildLayer(nsDisplayListBu
  
    nsRefPtr<ImageLayer> layer = static_cast<ImageLayer*>
      (aBuilder->LayerBuilder()->GetLeafLayerFor(aBuilder, aManager, aItem));
@@ -1528,9 +1527,8 @@ diff --git a/layout/generic/nsVideoFrame.cpp b/layout/generic/nsVideoFrame.cpp
        return nsnull;
    }
 -
-+  container->SetLayerID(layer->GetID());
-+  printf("~~~~~~~~~ set the container ID to : %i\n", layer->GetID());
-   layer->SetContainer(container);
+-  layer->SetContainer(container);
++  
    layer->SetFilter(nsLayoutUtils::GetGraphicsFilterForFrame(this));
    layer->SetContentFlags(Layer::CONTENT_OPAQUE);
    // Set a transform on the layer to draw the video in the right place
@@ -1538,6 +1536,7 @@ diff --git a/layout/generic/nsVideoFrame.cpp b/layout/generic/nsVideoFrame.cpp
    transform.Translate(r.TopLeft());
    transform.Scale(r.Width()/frameSize.width, r.Height()/frameSize.height);
    layer->SetTransform(gfx3DMatrix::From2D(transform));
+   layer->SetVisibleRegion(nsIntRect(0, 0, frameSize.width, frameSize.height));
 diff --git a/widget/xpwidgets/nsBaseWidget.cpp b/widget/xpwidgets/nsBaseWidget.cpp
 --- a/widget/xpwidgets/nsBaseWidget.cpp
 +++ b/widget/xpwidgets/nsBaseWidget.cpp
