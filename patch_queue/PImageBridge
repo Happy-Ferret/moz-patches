@@ -785,9 +785,9 @@ new file mode 100644
 +namespace {
 +
 +  struct ImageIDPair {
-+    ImageIDPair(SharedImage* aImage, PRUint64 aID)
++    ImageIDPair(MediaSharedImage* aImage, PRUint64 aID)
 +    : image(aImage), id(aID) {}
-+    SharedImage*  image;
++    MediaSharedImage*  image;
 +    PRUint64      id;
 +  };
 +
@@ -808,30 +808,30 @@ new file mode 100644
 +
 +}
 +
-+SharedImage* ImageBridgeParent::SwapSharedImage(PRUint64 aID, SharedImage* aImage)
++MediaSharedImage* ImageBridgeParent::SwapSharedImage(PRUint64 aID, MediaSharedImage* aImage)
 +{
 +  int idx = IndexOf(aID);
 +  if (idx == _INVALID_INDEX) {
 +    sSharedImageMap.AppendElement(ImageIDPair(aImage,aID));
 +    return nsnull;
 +  }
-+  SharedImage* prev = sSharedImageMap[idx].image;
++  MediaSharedImage* prev = sSharedImageMap[idx].image;
 +  sSharedImageMap[idx].image = aImage;
 +  return prev;
 +}
 +
-+SharedImage* ImageBridgeParent::RemoveSharedImage(PRUint64 aID) 
++MediaSharedImage* ImageBridgeParent::RemoveSharedImage(PRUint64 aID) 
 +{
 +  int idx = IndexOf(aID);
 +  if (idx != _INVALID_INDEX) {
-+    SharedImage* img = sSharedImageMap[idx].image;
++    MediaSharedImage* img = sSharedImageMap[idx].image;
 +    sSharedImageMap.RemoveElementAt(idx);
 +    return img;
 +  }
 +  return nsnull;
 +}
 +
-+SharedImage* ImageBridgeParent::GetSharedImage(PRUint64 aID)
++MediaSharedImage* ImageBridgeParent::GetSharedImage(PRUint64 aID)
 +{
 +  int idx = IndexOf(aID);
 +  if (idx != _INVALID_INDEX) {
@@ -898,9 +898,9 @@ new file mode 100644
 +
 +  // temporarily duplicated function because we cant share 
 +  // strcutures between protcols yet
-+  static SharedImage* GetSharedImage(PRUint64 aID);
-+  static SharedImage* SwapSharedImage(PRUint64 aID, SharedImage* aImage);
-+  static SharedImage* RemoveSharedImage(PRUint64 aID);
++  static MediaSharedImage* GetSharedImage(PRUint64 aID);
++  static MediaSharedImage* SwapSharedImage(PRUint64 aID, MediaSharedImage* aImage);
++  static MediaSharedImage* RemoveSharedImage(PRUint64 aID);
 +
 +private:
 +  // TODO: a list of ShadowImageLayers here
@@ -1169,7 +1169,7 @@ diff --git a/gfx/layers/ipc/ImageContainerParent.cpp b/gfx/layers/ipc/ImageConta
 new file mode 100644
 --- /dev/null
 +++ b/gfx/layers/ipc/ImageContainerParent.cpp
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,32 @@
 +/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
 + * This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -1183,43 +1183,18 @@ new file mode 100644
 +namespace mozilla {
 +namespace layers {
 +
-+namespace {
-+
-+  SharedImage* ToSharedImage(const MediaSharedImage& img)
-+  {
-+    if (img.type() == MediaSharedImage::TMediaYUVImage) {
-+      return new SharedImage(img.get_MediaYUVImage().Ydata(),
-+                             img.get_MediaYUVImage().Udata(),
-+                             img.get_MediaYUVImage().Vdata());
-+    } else {
-+      NS_ABORT_IF_FALSE(false,"TODO: missing types in convertion from MediaSharedImage to SharedImage");
-+      return nsnull;
-+    }
-+  }
-+
-+  MediaSharedImage* ToMediaSharedImage(const SharedImage& img)
-+  {
-+    if (img.type() == SharedImage::TYUVImage) {
-+      return new MediaSharedImage(img.get_YUVImage().Ydata(),
-+                             img.get_YUVImage().Udata(),
-+                             img.get_YUVImage().Vdata());
-+    } else {
-+      NS_ABORT_IF_FALSE(false,"TODO: missing types in convertion from MediaSharedImage to SharedImage");
-+      return nsnull;
-+    }
-+  }
-+} // anonymous namespace
-+
 +bool ImageContainerParent::RecvPushSharedImage(const MediaSharedImage& aImage)
 +{
 +  printf(" -- ImageContainerParent::RecvPushSharedImage");
 +
 +  // TODO
-+  SharedImage * prevImage = ImageBridgeParent::SwapSharedImage(mHandle.id, ToSharedImage(aImage));
++  MediaSharedImage * prevImage = 
++      ImageBridgeParent::SwapSharedImage(mHandle.id(), 
++                                         const_cast<MediaSharedImage*>(&aImage));
 +
 +  mBridge->ScheduleComposition();
 +  if (prevImage) {
-+    SendReleasedSharedImage(*ToMediaSharedImage(*prevImage));
++    SendReleasedSharedImage(*prevImage);
 +  }
 +  return true;
 +}
